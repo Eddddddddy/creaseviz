@@ -1,5 +1,7 @@
 /// <reference lib="webworker" />
 
+import { validateCalibrationValue, validateZagDimensions } from '../lib/fileLimits'
+
 interface BuildMessage {
   type: 'build-zag'
   heights: ArrayBuffer
@@ -37,8 +39,12 @@ function percentile(sorted: number[], ratio: number): number {
 self.onmessage = (event: MessageEvent<BuildMessage | TextureMessage>) => {
   const message = event.data
   if (message.type === 'build-texture') {
+    const dimensions = validateZagDimensions(message.width, message.height)
+    if (message.colorStride !== dimensions.colorStride || message.color.byteLength !== dimensions.colorBytes) {
+      throw new Error('ZAG 纹理缓冲区尺寸不匹配')
+    }
     const color = new Uint8Array(message.color)
-    const textureRgba = new Uint8ClampedArray(message.width * message.height * 4)
+    const textureRgba = new Uint8ClampedArray(dimensions.heightBytes)
     for (let row = 0; row < message.height; row += 1) {
       for (let column = 0; column < message.width; column += 1) {
         const source = row * message.colorStride + column * 3
@@ -53,10 +59,26 @@ self.onmessage = (event: MessageEvent<BuildMessage | TextureMessage>) => {
     return
   }
 
+  const dimensions = validateZagDimensions(message.width, message.height)
+  if (message.heights.byteLength !== dimensions.heightBytes) throw new Error('ZAG 高度缓冲区尺寸不匹配')
+  if (message.maskStride !== dimensions.maskStride || message.mask.byteLength !== dimensions.maskBytes) {
+    throw new Error('ZAG 掩码缓冲区尺寸不匹配')
+  }
+  if (message.color) {
+    if (message.colorStride !== dimensions.colorStride || message.color.byteLength !== dimensions.colorBytes) {
+      throw new Error('ZAG 纹理缓冲区尺寸不匹配')
+    }
+  }
+  validateCalibrationValue(message.xyPitchMm, 'XY ')
+  validateCalibrationValue(message.zUnitMm, 'Z ')
+  if (!Number.isSafeInteger(message.targetVertices) || message.targetVertices < 1 || message.targetVertices > 1_000_000) {
+    throw new Error('目标网格点数无效')
+  }
+
   const heights = new Int32Array(message.heights)
   const mask = new Uint8Array(message.mask)
   const color = message.color ? new Uint8Array(message.color) : undefined
-  const step = Math.max(1, Math.ceil(Math.sqrt((message.width * message.height) / message.targetVertices)))
+  const step = Math.max(1, Math.ceil(Math.sqrt(dimensions.pixels / message.targetVertices)))
   const columns = sampleIndices(message.width, step)
   const rows = sampleIndices(message.height, step)
   const sampledWidth = columns.length
@@ -132,11 +154,13 @@ self.onmessage = (event: MessageEvent<BuildMessage | TextureMessage>) => {
 
   let textureRgba: Uint8ClampedArray | undefined
   if (color && message.colorStride) {
-    textureRgba = new Uint8ClampedArray(message.width * message.height * 4)
-    for (let row = 0; row < message.height; row += 1) {
-      for (let column = 0; column < message.width; column += 1) {
-        const source = row * message.colorStride + column * 3
-        const target = (row * message.width + column) * 4
+    textureRgba = new Uint8ClampedArray(sampledWidth * sampledHeight * 4)
+    for (let rowIndex = 0; rowIndex < sampledHeight; rowIndex += 1) {
+      const sourceRow = rows[rowIndex]
+      for (let columnIndex = 0; columnIndex < sampledWidth; columnIndex += 1) {
+        const sourceColumn = columns[columnIndex]
+        const source = sourceRow * message.colorStride + sourceColumn * 3
+        const target = (rowIndex * sampledWidth + columnIndex) * 4
         textureRgba[target] = color[source + 2]
         textureRgba[target + 1] = color[source + 1]
         textureRgba[target + 2] = color[source]
@@ -155,6 +179,8 @@ self.onmessage = (event: MessageEvent<BuildMessage | TextureMessage>) => {
     crossSections,
     crossSectionX: crossSectionX.buffer,
     textureRgba: textureRgba?.buffer,
+    textureWidth: textureRgba ? sampledWidth : undefined,
+    textureHeight: textureRgba ? sampledHeight : undefined,
     sampledWidth,
     sampledHeight,
     sampleStep: step,

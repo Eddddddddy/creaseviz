@@ -1,6 +1,6 @@
 import * as THREE from 'three'
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import type { ViewerModel, ZagHeightField } from '../types'
+import { FILE_LIMITS, assertNotAborted, inspectStlHeader, validateZagDimensions } from './fileLimits'
 import { createScientificPalette } from './palette'
 
 interface WorkerResult {
@@ -13,6 +13,8 @@ interface WorkerResult {
   crossSections: ArrayBuffer[]
   crossSectionX: ArrayBuffer
   textureRgba?: ArrayBuffer
+  textureWidth?: number
+  textureHeight?: number
   sampledWidth: number
   sampledHeight: number
   sampleStep: number
@@ -24,34 +26,74 @@ interface WorkerResult {
   triangleCount: number
 }
 
+interface StlWorkerResult {
+  type: 'stl-result'
+  positions: ArrayBuffer
+  normals: ArrayBuffer
+  cross: ArrayBuffer
+  crossX: ArrayBuffer
+  bounds: [number, number, number, number, number, number]
+  suggestedMinMm: number
+  suggestedMaxMm: number
+  triangleCount: number
+  originalPointCount: number
+  renderedPointCount: number
+  sampleStep: number
+}
+
+function runWorker<Result>(
+  worker: Worker,
+  message: unknown,
+  transfers: Transferable[],
+  signal?: AbortSignal,
+): Promise<Result> {
+  assertNotAborted(signal)
+  return new Promise<Result>((resolve, reject) => {
+    let settled = false
+    const finish = (action: () => void) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      signal?.removeEventListener('abort', abort)
+      worker.terminate()
+      action()
+    }
+    const abort = () => finish(() => reject(new DOMException('模型处理已取消', 'AbortError')))
+    const timeout = window.setTimeout(
+      () => finish(() => reject(new Error('模型处理超时；请降低文件规模后重试'))),
+      FILE_LIMITS.workerTimeoutMs,
+    )
+    signal?.addEventListener('abort', abort, { once: true })
+    worker.onmessage = (event: MessageEvent<Result>) => finish(() => resolve(event.data))
+    worker.onerror = (event) => finish(() => reject(new Error(event.message || '模型 Worker 处理失败')))
+    worker.onmessageerror = () => finish(() => reject(new Error('模型 Worker 返回了无效数据')))
+    worker.postMessage(message, transfers)
+  })
+}
+
 export async function zagFieldToModel(
   field: ZagHeightField,
   fileName: string,
   targetVertices = 220_000,
+  signal?: AbortSignal,
 ): Promise<ViewerModel> {
+  validateZagDimensions(field.capture.width, field.capture.height)
   const worker = new Worker(new URL('../workers/meshWorker.ts', import.meta.url), { type: 'module' })
-  const result = await new Promise<WorkerResult>((resolve, reject) => {
-    worker.onmessage = (event: MessageEvent<WorkerResult>) => resolve(event.data)
-    worker.onerror = (event) => reject(new Error(event.message || 'ZAG 网格构建失败'))
-    const transfers: Transferable[] = [field.heights.buffer, field.mask.buffer]
-    if (field.color) transfers.push(field.color.buffer)
-    worker.postMessage(
-      {
-        type: 'build-zag',
-        heights: field.heights.buffer,
-        mask: field.mask.buffer,
-        color: field.color?.buffer,
-        width: field.capture.width,
-        height: field.capture.height,
-        maskStride: field.maskStride,
-        colorStride: field.colorStride,
-        xyPitchMm: field.capture.xyPitchMm,
-        zUnitMm: field.capture.zUnitMm,
-        targetVertices,
-      },
-      transfers,
-    )
-  }).finally(() => worker.terminate())
+  const transfers: Transferable[] = [field.heights.buffer, field.mask.buffer]
+  if (field.color) transfers.push(field.color.buffer)
+  const result = await runWorker<WorkerResult>(worker, {
+    type: 'build-zag',
+    heights: field.heights.buffer,
+    mask: field.mask.buffer,
+    color: field.color?.buffer,
+    width: field.capture.width,
+    height: field.capture.height,
+    maskStride: field.maskStride,
+    colorStride: field.colorStride,
+    xyPitchMm: field.capture.xyPitchMm,
+    zUnitMm: field.capture.zUnitMm,
+    targetVertices,
+  }, transfers, signal)
 
   const heightSamples = new Float32Array(result.scalars)
   const geometry = new THREE.BufferGeometry()
@@ -69,8 +111,8 @@ export async function zagFieldToModel(
     geometry,
     palette: field.palette.byteLength >= 768 ? field.palette.slice(0, 768) : createScientificPalette(),
     textureRgba: result.textureRgba ? new Uint8ClampedArray(result.textureRgba) : undefined,
-    textureWidth: field.capture.width,
-    textureHeight: field.capture.height,
+    textureWidth: result.textureWidth,
+    textureHeight: result.textureHeight,
     widthMm: (field.capture.width - 1) * field.capture.xyPitchMm,
     lengthMm: (field.capture.height - 1) * field.capture.xyPitchMm,
     minHeightMm: result.minHeightMm,
@@ -98,50 +140,41 @@ export async function zagTextureToRgba(
   width: number,
   height: number,
   colorStride: number,
+  signal?: AbortSignal,
 ): Promise<Uint8ClampedArray> {
+  validateZagDimensions(width, height)
   const worker = new Worker(new URL('../workers/meshWorker.ts', import.meta.url), { type: 'module' })
-  const result = await new Promise<{ type: 'texture-result'; textureRgba: ArrayBuffer }>((resolve, reject) => {
-    worker.onmessage = (event) => resolve(event.data)
-    worker.onerror = (event) => reject(new Error(event.message || 'ZAG 纹理转换失败'))
-    worker.postMessage(
-      { type: 'build-texture', color: color.buffer, width, height, colorStride },
-      [color.buffer],
-    )
-  }).finally(() => worker.terminate())
+  const result = await runWorker<{ type: 'texture-result'; textureRgba: ArrayBuffer }>(
+    worker,
+    { type: 'build-texture', color: color.buffer, width, height, colorStride },
+    [color.buffer],
+    signal,
+  )
   return new Uint8ClampedArray(result.textureRgba)
 }
 
-export async function stlFileToModel(file: File): Promise<ViewerModel> {
+export async function stlFileToModel(file: File, signal?: AbortSignal): Promise<ViewerModel> {
+  assertNotAborted(signal)
+  const header = new Uint8Array(await file.slice(0, 84).arrayBuffer())
+  const inspection = inspectStlHeader(file.size, header)
+  assertNotAborted(signal)
   const bytes = await file.arrayBuffer()
-  const geometry = new STLLoader().parse(bytes)
-  geometry.computeBoundingBox()
+  assertNotAborted(signal)
+  const worker = new Worker(new URL('../workers/stlWorker.ts', import.meta.url), { type: 'module' })
+  const result = await runWorker<StlWorkerResult>(worker, {
+    type: 'parse-stl',
+    bytes,
+    format: inspection.format,
+    triangleCount: inspection.triangleCount,
+  }, [bytes], signal)
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(result.positions), 3))
+  geometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(result.normals), 3))
+  const [minX, minY, minZ, maxX, maxY, maxZ] = result.bounds
+  geometry.boundingBox = new THREE.Box3(new THREE.Vector3(minX, minY, minZ), new THREE.Vector3(maxX, maxY, maxZ))
   geometry.computeBoundingSphere()
-  const box = geometry.boundingBox!
-  const position = geometry.getAttribute('position') as THREE.BufferAttribute
-  const triangleCount = position.count / 3
-  const step = Math.max(1, Math.floor(position.count / 180_000))
-  const values: number[] = []
-  for (let index = 0; index < position.count; index += step) values.push(position.getZ(index))
-  values.sort((a, b) => a - b)
-  const percentile = (ratio: number) => values[Math.floor((values.length - 1) * ratio)] ?? 0
-  const sectionBins = 500
-  const sums = new Float64Array(sectionBins)
-  const counts = new Uint32Array(sectionBins)
-  const yMid = (box.min.y + box.max.y) / 2
-  const band = Math.max((box.max.y - box.min.y) / 300, 0.002)
-  for (let index = 0; index < position.count; index += 1) {
-    if (Math.abs(position.getY(index) - yMid) > band) continue
-    const ratio = (position.getX(index) - box.min.x) / Math.max(1e-9, box.max.x - box.min.x)
-    const bin = Math.min(sectionBins - 1, Math.max(0, Math.floor(ratio * sectionBins)))
-    sums[bin] += position.getZ(index)
-    counts[bin] += 1
-  }
-  const cross = new Float32Array(sectionBins)
-  const crossX = new Float32Array(sectionBins)
-  for (let index = 0; index < sectionBins; index += 1) {
-    cross[index] = counts[index] ? sums[index] / counts[index] : Number.NaN
-    crossX[index] = box.min.x + ((index + 0.5) / sectionBins) * (box.max.x - box.min.x)
-  }
+  const cross = new Float32Array(result.cross)
+  const crossX = new Float32Array(result.crossX)
 
   return {
     kind: 'stl',
@@ -149,16 +182,16 @@ export async function stlFileToModel(file: File): Promise<ViewerModel> {
     label: file.name,
     geometry,
     palette: createScientificPalette(),
-    widthMm: box.max.x - box.min.x,
-    lengthMm: box.max.y - box.min.y,
-    minHeightMm: box.min.z,
-    maxHeightMm: box.max.z,
-    suggestedMinMm: percentile(0.01),
-    suggestedMaxMm: percentile(0.99),
-    triangleCount,
-    originalPointCount: position.count,
-    renderedPointCount: position.count,
-    sampleStep: 1,
+    widthMm: maxX - minX,
+    lengthMm: maxY - minY,
+    minHeightMm: minZ,
+    maxHeightMm: maxZ,
+    suggestedMinMm: result.suggestedMinMm,
+    suggestedMaxMm: result.suggestedMaxMm,
+    triangleCount: result.triangleCount,
+    originalPointCount: result.originalPointCount,
+    renderedPointCount: result.renderedPointCount,
+    sampleStep: result.sampleStep,
     heightAxis: [0, 0, 1],
     rotationX: -Math.PI / 2,
     scaleOrder: 'stl',

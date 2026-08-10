@@ -3,6 +3,18 @@ import type * as THREE from 'three'
 export type ViewPreset = 'top' | 'front' | 'side' | 'iso' | 'reset'
 export type SurfaceMode = 'height' | 'texture' | 'solid'
 export type InteractionMode = 'camera' | 'model'
+export type RotationAxis = 'x' | 'y' | 'z'
+export type RotationDirection = 'clockwise' | 'counterclockwise'
+export type ExportQuality = 'standard' | 'high' | 'maximum'
+
+export interface ExportCameraSettings {
+  azimuthDeg: number
+  elevationDeg: number
+  distanceMm: number
+  targetX: number
+  targetY: number
+  targetZ: number
+}
 
 export interface CaptureSummary {
   id: string

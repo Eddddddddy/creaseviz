@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Camera, Download, FolderOpen, MapPin, RotateCcw, ScanLine, SquareDashedMousePointer, Trash2 } from 'lucide-react'
+import { Camera, Download, Film, FolderOpen, MapPin, RotateCcw, ScanLine, SquareDashedMousePointer, Trash2 } from 'lucide-react'
 import CrossSection from './components/CrossSection'
+import ExportWorkspace from './components/ExportWorkspace'
 import Inspector from './components/Inspector'
 import ViewerCanvas from './components/ViewerCanvas'
 import { stlFileToModel, zagFieldToModel, zagTextureToRgba } from './lib/models'
 import { paletteCss } from './lib/palette'
 import { ZagArchive } from './lib/zag'
-import type { InteractionMode, PointMarker, PointerSample, SurfaceMode, ViewPreset, ViewerModel } from './types'
+import type { ExportCameraSettings, InteractionMode, PointMarker, PointerSample, SurfaceMode, ViewPreset, ViewerModel } from './types'
 
 function formatNumber(value: number, digits = 3): string {
   return Number.isFinite(value) ? value.toFixed(digits) : '—'
+}
+
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === 'AbortError'
 }
 
 interface LoadedTexture {
@@ -22,6 +27,7 @@ interface LoadedTexture {
 }
 
 export default function App() {
+  const [page, setPage] = useState<'viewer' | 'export'>(() => window.location.hash === '#/export' ? 'export' : 'viewer')
   const [archive, setArchive] = useState<ZagArchive>()
   const [model, setModel] = useState<ViewerModel>()
   const [selectedCaptureId, setSelectedCaptureId] = useState<string>()
@@ -48,12 +54,20 @@ export default function App() {
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string>()
   const [viewRequest, setViewRequest] = useState<{ preset: ViewPreset; nonce: number }>({ preset: 'iso', nonce: 0 })
+  const [viewerCamera, setViewerCamera] = useState<ExportCameraSettings>()
   const [modelResetNonce, setModelResetNonce] = useState(0)
   const fileInput = useRef<HTMLInputElement>(null)
   const pointMarkerSequence = useRef(0)
   const modelRef = useRef<ViewerModel | undefined>(undefined)
+  const loadAbortRef = useRef<AbortController | undefined>(undefined)
   const textureQueueRef = useRef<Promise<void>>(Promise.resolve())
   const textureJobsRef = useRef(new Map<string, Promise<LoadedTexture>>())
+
+  useEffect(() => {
+    const syncPage = () => setPage(window.location.hash === '#/export' ? 'export' : 'viewer')
+    window.addEventListener('hashchange', syncPage)
+    return () => window.removeEventListener('hashchange', syncPage)
+  }, [])
 
   const applyModel = useCallback((next: ViewerModel) => {
     setModel((previous) => {
@@ -89,7 +103,10 @@ export default function App() {
     modelRef.current = model
   }, [model])
 
-  useEffect(() => () => modelRef.current?.geometry.dispose(), [])
+  useEffect(() => () => {
+    loadAbortRef.current?.abort()
+    modelRef.current?.geometry.dispose()
+  }, [])
 
   const ensureTexture = useCallback((target: ViewerModel): Promise<LoadedTexture> => {
     const capture = target.capture
@@ -179,19 +196,25 @@ export default function App() {
   const loadCapture = useCallback(async (source: ZagArchive, captureId: string) => {
     const capture = source.captures.find((item) => item.id === captureId)
     if (!capture) return
+    loadAbortRef.current?.abort()
+    const controller = new AbortController()
+    loadAbortRef.current = controller
     setBusy(true)
     setError(undefined)
     setProgress(0.5)
     try {
-      const field = await source.loadCapture(capture, setProgress)
-      const next = await zagFieldToModel(field, source.fileName)
+      const field = await source.loadCapture(capture, setProgress, controller.signal)
+      const next = await zagFieldToModel(field, source.fileName, 220_000, controller.signal)
       setProgress(1)
       applyModel(next)
       setSelectedCaptureId(capture.id)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'ZAG 采集记录加载失败')
+      if (!isAbortError(cause)) setError(cause instanceof Error ? cause.message : 'ZAG 采集记录加载失败')
     } finally {
-      setBusy(false)
+      if (loadAbortRef.current === controller) {
+        loadAbortRef.current = undefined
+        setBusy(false)
+      }
     }
   }, [applyModel])
 
@@ -203,31 +226,37 @@ export default function App() {
       setError('请选择 .zag 或 .stl 文件')
       return
     }
+    loadAbortRef.current?.abort()
+    const controller = new AbortController()
+    loadAbortRef.current = controller
     setBusy(true)
     setProgress(0.04)
     setError(undefined)
     try {
       if (zag) {
-        const nextArchive = await ZagArchive.open(zag, setProgress)
+        const nextArchive = await ZagArchive.open(zag, setProgress, controller.signal)
         setArchive(nextArchive)
         const firstCapture = nextArchive.captures[0]
         setSelectedCaptureId(firstCapture.id)
-        const field = await nextArchive.loadCapture(firstCapture, setProgress)
-        const next = await zagFieldToModel(field, nextArchive.fileName)
+        const field = await nextArchive.loadCapture(firstCapture, setProgress, controller.signal)
+        const next = await zagFieldToModel(field, nextArchive.fileName, 220_000, controller.signal)
         setProgress(1)
         applyModel(next)
       } else if (stl) {
         setArchive(undefined)
         setSelectedCaptureId(undefined)
         setProgress(0.25)
-        const next = await stlFileToModel(stl)
+        const next = await stlFileToModel(stl, controller.signal)
         setProgress(1)
         applyModel(next)
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '文件加载失败')
+      if (!isAbortError(cause)) setError(cause instanceof Error ? cause.message : '文件加载失败')
     } finally {
-      setBusy(false)
+      if (loadAbortRef.current === controller) {
+        loadAbortRef.current = undefined
+        setBusy(false)
+      }
     }
   }, [applyModel])
 
@@ -272,6 +301,37 @@ export default function App() {
     void loadFiles(event.dataTransfer.files)
   }
 
+  const openExportPage = () => {
+    window.location.hash = '/export'
+  }
+
+  const closeExportPage = () => {
+    window.location.hash = ''
+  }
+
+  if (page === 'export') {
+    return (
+      <main className="app-shell export-shell" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+        <input ref={fileInput} hidden type="file" accept=".zag,.stl" multiple onChange={(event) => event.target.files && void loadFiles(event.target.files)} />
+        <ExportWorkspace
+          model={model}
+          mode={mode}
+          minHeight={minHeight}
+          maxHeight={maxHeight}
+          scaleX={scaleX}
+          scaleY={scaleY}
+          scaleZ={scaleZ}
+          lightStrength={lightStrength}
+          paletteBrightness={paletteBrightness}
+          textureMix={textureMix}
+          viewerCamera={viewerCamera}
+          onBack={closeExportPage}
+          onOpenFile={() => fileInput.current?.click()}
+        />
+      </main>
+    )
+  }
+
   return (
     <main className="app-shell" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
       <header className="toolbar">
@@ -307,6 +367,7 @@ export default function App() {
         </button>
         <div className="toolbar-spacer" />
         <button className="toolbar-button" disabled={!model} onClick={takeScreenshot}><Download size={17} />截图</button>
+        <button className="toolbar-button" disabled={!model} onClick={openExportPage}><Film size={17} />影视导出</button>
         <button className="toolbar-button" onClick={resetScene}><RotateCcw size={17} />重置</button>
       </header>
 
@@ -336,6 +397,7 @@ export default function App() {
               onAddPointMarker={addPointMarker}
               onRemovePointMarker={removePointMarker}
               onFps={setFps}
+              onCameraChange={setViewerCamera}
             />
             {!model && !busy && (
               <button className="drop-zone" onClick={() => fileInput.current?.click()}>

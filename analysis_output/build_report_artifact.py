@@ -6,11 +6,12 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 OUTPUT = Path(__file__).resolve().parent
-GENERATED_AT = "2026-08-07T20:25:00+08:00"
+GENERATED_AT = datetime.now(timezone.utc).isoformat()
 
 
 def read_csv(name: str) -> list[dict]:
@@ -40,6 +41,17 @@ def main() -> None:
     along = read_csv("along_fold_metrics.csv")
     summary = read_csv("summary_metrics.csv")
     sensitivity = read_csv("baseline_sensitivity.csv")
+    along_summary = metrics["along_fold_summary"]
+    aggregate = metrics["aggregate_median_profile"]
+    surface = metrics["surface_stl"]
+    solid = metrics["solid_stl"]
+    classification = metrics["solid_stl_classification"]
+    calibration = metrics["zag"]
+    depth = along_summary["depth_mm"]
+    fwhm = along_summary["fwhm_mm"]
+    center = along_summary["center_x_mm"]
+    sensitivity_depths = [row["depth_mm"] for row in sensitivity]
+    sensitivity_fwhm = [row["fwhm_mm"] for row in sensitivity]
 
     database_path = OUTPUT / "crease_analysis.sqlite"
     connection = sqlite3.connect(database_path)
@@ -120,11 +132,11 @@ ORDER BY depth_mm DESC
         "query": {
             "language": "python",
             "sql": analysis_code,
-            "description": "Reconstruct the stl2 top surface, read ZAG calibration, and calculate fold depth, FWHM, area, and along-fold stability.",
+            "description": "Reconstruct the supplied top surface, read ZAG calibration, and calculate fold depth, FWHM, area, and along-fold stability.",
             "tables_used": [
-                "stl2.stl",
-                "stl1.stl",
-                "VR-20260807_141525.zag",
+                "surface STL input",
+                "solid STL input",
+                "ZAG input",
             ],
             "filters": [
                 "Y analysis range: 0.5-14.7 mm",
@@ -203,26 +215,48 @@ ORDER BY depth_mm DESC
                 "id": "technical-summary",
                 "type": "markdown",
                 "sourceId": "scan-analysis",
-                "body": "## 技术摘要\n\n- **这是一条宽而连续的 U/V 形凹槽。** 沿折痕长度方向的中位深度为 **1.829 mm**，5–95 百分位为 **1.722–1.881 mm**。\n- **半深宽度稳定。** FWHM 中位数为 **6.864 mm**，5–95 百分位为 **6.509–7.034 mm**。\n- **折痕轴线位于 X≈9.09 mm，半深处左右对称性较好。** 但左右肩部高度相差约 **0.29 mm**，不应直接把原始 Z 最大值与最小值之差当作折痕深度。\n- **主要不确定性来自基准线定义。** 不同肩部区间使聚合截面深度在 **1.646–1.861 mm** 之间变化，因此本结果更适合作为同一口径下的比较基线。",
+                "body": (
+                    "## 技术摘要\n\n"
+                    f"- 沿折痕长度方向的中位深度为 **{depth['median']:.3f} mm**，5–95 百分位为 **{depth['p05']:.3f}–{depth['p95']:.3f} mm**。\n"
+                    f"- FWHM 中位数为 **{fwhm['median']:.3f} mm**，5–95 百分位为 **{fwhm['p05']:.3f}–{fwhm['p95']:.3f} mm**。\n"
+                    f"- 折痕轴线中位位置为 **X≈{center['median']:.2f} mm**；不应直接把原始 Z 最大值与最小值之差当作折痕深度。\n"
+                    f"- 不同肩部区间使聚合截面深度在 **{min(sensitivity_depths):.3f}–{max(sensitivity_depths):.3f} mm** 之间变化。"
+                ),
             },
             {
                 "id": "cross-section-finding",
                 "type": "markdown",
                 "sourceId": "scan-analysis",
-                "body": "## 中位截面显示折痕底部宽平、两侧连续过渡\n\n下图把所有有效 Y 条带的横向截面取中位数，并叠加左右肩部拟合基准线。聚合截面深度为 **1.822 mm**，FWHM 为 **6.936 mm**，凹槽截面积为 **13.68 mm²**。曲线没有显示一条叠加在宽槽上的极窄尖底缺陷。",
+                "body": (
+                    "## 中位截面与肩部拟合基准线\n\n"
+                    "下图把所有有效 Y 条带的横向截面取中位数，并叠加左右肩部拟合基准线。"
+                    f"聚合截面深度为 **{aggregate['depth_mm']:.3f} mm**，FWHM 为 **{aggregate['fwhm_mm']:.3f} mm**，"
+                    f"凹槽截面积为 **{aggregate['cross_sectional_area_mm2']:.2f} mm²**。"
+                ),
             },
             {"id": "cross-section-chart-block", "type": "chart", "chartId": "cross-section-chart"},
             {
                 "id": "along-fold-finding",
                 "type": "markdown",
                 "sourceId": "scan-analysis",
-                "body": "## 深度沿 14.2 mm 折痕长度总体稳定\n\n每个约 0.237 mm 的 Y 条带独立计算深度。中位数为 **1.829 mm**，90% 的条带位于 **1.722–1.881 mm**。这说明凹槽不是只在局部出现；但单次扫描不能用来判断设备重复性或长期耐久性。",
+                "body": (
+                    "## 深度沿折痕长度的变化\n\n"
+                    f"每个约 {metrics['method']['metric_y_band_mm']:.3f} mm 的 Y 条带独立计算深度。"
+                    f"中位数为 **{depth['median']:.3f} mm**，90% 的条带位于 **{depth['p05']:.3f}–{depth['p95']:.3f} mm**。"
+                    "单次扫描不能用来判断设备重复性或长期耐久性。"
+                ),
             },
             {"id": "along-fold-chart-block", "type": "chart", "chartId": "along-fold-depth-chart"},
             {
                 "id": "scope-definitions",
                 "type": "markdown",
-                "body": "## 数据范围与指标定义\n\n- `stl2.stl` 是用于分析的开放顶表面，共 **2,650,659** 个三角面。\n- `stl1.stl` 包含完全相同的顶表面，另加同样数量的底面三角形和 **17,926** 个侧壁三角形；它是闭合实体，不应重复统计。\n- ZAG 标定给出 XY 像素节距 **7.4017786 µm**，内部 Z 单位 **0.01 µm**；STL 导出的 Z 坐标量化步长为 **0.1 µm**。\n- 深度是“肩部拟合基准线在槽底位置的高度 − 槽底高度”；FWHM 是凹陷达到当地最大深度 50% 时的连续横向宽度。",
+                "body": (
+                    "## 数据范围与指标定义\n\n"
+                    f"- 表面 STL 共 **{surface['triangle_count']:,}** 个三角面。\n"
+                    f"- 实体 STL 的顶面为 **{classification['top_triangles']:,}** 个、底面为 **{classification['bottom_triangles']:,}** 个、侧壁为 **{classification['side_triangles']:,}** 个三角面。\n"
+                    f"- ZAG 标定给出 XY 像素节距 **{calibration['xy_pitch_um']:.4f} µm**，内部 Z 单位 **{calibration['z_internal_unit_um']:.4f} µm**。\n"
+                    "- 深度是“肩部拟合基准线在槽底位置的高度 − 槽底高度”；FWHM 是凹陷达到当地最大深度 50% 时的连续横向宽度。"
+                ),
             },
             {
                 "id": "methodology",
@@ -233,7 +267,13 @@ ORDER BY depth_mm DESC
                 "id": "limitations",
                 "type": "markdown",
                 "sourceId": "scan-analysis",
-                "body": "## 基准线口径是当前最大的方法不确定性\n\n扫描窗口并未同时包含两个完全平坦的肩部平台，因此向内收缩肩部区间会将聚合截面深度从 **1.861 mm** 降低到 **1.646 mm**，FWHM 从 **7.047 mm** 降低到 **6.463 mm**。这不是算法错误，而是“折痕相对于哪个基准面”的定义问题。",
+                "body": (
+                    "## 基准线口径是当前最大的方法不确定性\n\n"
+                    "扫描窗口未必同时包含两个完全平坦的肩部平台。不同肩部区间使聚合截面深度位于 "
+                    f"**{min(sensitivity_depths):.3f}–{max(sensitivity_depths):.3f} mm**，FWHM 位于 "
+                    f"**{min(sensitivity_fwhm):.3f}–{max(sensitivity_fwhm):.3f} mm**。"
+                    "这反映的是参考面的定义差异。"
+                ),
             },
             {"id": "sensitivity-table-block", "type": "table", "tableId": "sensitivity-table"},
             {
@@ -330,7 +370,7 @@ ORDER BY depth_mm DESC
                 "summary_metrics": len(summary),
                 "sensitivity": len(sensitivity),
             },
-            "z_range_mm": metrics["stl2"]["extent"]["range_mm"][2],
+            "z_range_mm": metrics["surface_stl"]["extent"]["range_mm"][2],
         },
     }
     (OUTPUT / "report_artifact.json").write_text(

@@ -3,15 +3,16 @@
 
 The script uses only NumPy, Pillow, and the Python standard library.  It:
 1. validates both binary STL files;
-2. confirms that stl1 is the closed-solid form of the stl2 top surface;
+2. confirms that the solid STL contains the supplied top surface;
 3. reads XY/Z calibration and capture timestamps from the ZAG archive;
-4. reconstructs a sparse calibrated height grid from stl2;
+4. reconstructs a sparse calibrated height grid from the surface STL;
 5. measures depth, FWHM width, symmetry, area, and along-fold stability;
 6. writes compact CSV/JSON evidence and two PNG figures.
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import math
@@ -23,11 +24,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 
-ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = Path(__file__).resolve().parent
-STL_SOLID = ROOT / "stl1.stl"
-STL_SURFACE = ROOT / "stl2.stl"
-ZAG_FILE = ROOT / "VR-20260807_141525.zag"
 
 STL_DTYPE = np.dtype(
     [
@@ -154,8 +151,8 @@ def classify_solid_mesh(solid_mesh: np.memmap, surface_triangle_count: int) -> d
         "top_triangles": top_triangles,
         "bottom_triangles": bottom_triangles,
         "side_triangles": side_triangles,
-        "top_matches_stl2_triangle_count": top_triangles == surface_triangle_count,
-        "bottom_matches_stl2_triangle_count": bottom_triangles == surface_triangle_count,
+        "top_matches_surface_triangle_count": top_triangles == surface_triangle_count,
+        "bottom_matches_surface_triangle_count": bottom_triangles == surface_triangle_count,
     }
 
 
@@ -496,13 +493,25 @@ def strip_arrays(value):
     return value
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--solid-stl", type=Path, required=True)
+    parser.add_argument("--surface-stl", type=Path, required=True)
+    parser.add_argument("--zag", type=Path, required=True)
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+    solid_stl = args.solid_stl.expanduser().resolve()
+    surface_stl = args.surface_stl.expanduser().resolve()
+    zag_file = args.zag.expanduser().resolve()
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    zag_metadata = parse_zag_metadata(ZAG_FILE)
+    zag_metadata = parse_zag_metadata(zag_file)
     xy_pitch_mm = zag_metadata["xy_meter_per_pixel"] * 1000
 
-    solid_mesh, solid_info = open_binary_stl(STL_SOLID)
-    surface_mesh, surface_info = open_binary_stl(STL_SURFACE)
+    solid_mesh, solid_info = open_binary_stl(solid_stl)
+    surface_mesh, surface_info = open_binary_stl(surface_stl)
     solid_info["extent"] = stl_extent(solid_mesh)
     surface_info["extent"] = stl_extent(surface_mesh)
     solid_classification = classify_solid_mesh(
@@ -681,10 +690,10 @@ def main() -> None:
             "fwhm_definition": "Width of contiguous depression at 50% of the local maximum depth",
         },
         "zag": zag_metadata,
-        "stl1": solid_info,
-        "stl2": surface_info,
-        "stl1_classification": solid_classification,
-        "stl2_mesh_quality": mesh_quality,
+        "solid_stl": solid_info,
+        "surface_stl": surface_info,
+        "solid_stl_classification": solid_classification,
+        "surface_stl_mesh_quality": mesh_quality,
         "height_grid": grid_info,
         "aggregate_median_profile": serializable_aggregate,
         "along_fold_summary": along_summary,
@@ -700,7 +709,7 @@ def main() -> None:
         "limitations": [
             "STL does not encode physical units; millimetres are supported by the ZAG XY calibration and coordinate pitch.",
             "Depth and FWHM depend on the selected shoulder baseline because the scanned window does not contain two perfectly flat plateaus.",
-            "The ZAG archive contains four capture records, while the supplied STL filenames do not identify which record or merge recipe produced the export.",
+            "The ZAG archive may contain multiple capture records, while an STL filename does not identify which record or merge recipe produced the export.",
             "Results describe one scan/export only; repeatability, device-to-device variation, and before/after aging cannot be inferred.",
         ],
     }

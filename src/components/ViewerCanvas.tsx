@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, type ComponentRef, type RefObject } from 'react'
+import { useEffect, useRef, type ComponentRef, type RefObject } from 'react'
 import { Canvas, type ThreeEvent, useThree } from '@react-three/fiber'
-import { GizmoHelper, GizmoViewport, Grid, Html, OrbitControls } from '@react-three/drei'
-import { X } from 'lucide-react'
+import { GizmoHelper, GizmoViewport, Grid, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
-import type { InteractionMode, PointMarker, PointerSample, SurfaceMode, ViewPreset, ViewerModel } from '../types'
-import HeightMaterial from './HeightMaterial'
+import type { ExportCameraSettings, InteractionMode, PointMarker, PointerSample, SurfaceMode, ViewPreset, ViewerModel } from '../types'
+import { SceneLighting, SceneSurface } from './SceneSurface'
 
 type OrbitControlsHandle = ComponentRef<typeof OrbitControls>
 
@@ -31,6 +30,7 @@ interface ViewerCanvasProps {
   onAddPointMarker: (sample: PointerSample) => void
   onRemovePointMarker: (markerId: number) => void
   onFps: (fps: number) => void
+  onCameraChange?: (settings: ExportCameraSettings) => void
 }
 
 function CameraRig({ model, request, controlsRef }: {
@@ -80,205 +80,35 @@ function FpsSampler({ onFps }: { onFps: (fps: number) => void }) {
   return null
 }
 
-function SceneLighting({ model, strength }: { model?: ViewerModel; strength: number }) {
-  const span = model ? Math.max(model.widthMm, model.lengthMm, 1) : 30
-  const shadowExtent = span * 0.9
-  return (
-    <>
-      <ambientLight intensity={0.07} />
-      <hemisphereLight color="#dce8ff" groundColor="#141920" intensity={0.2} />
-      <directionalLight
-        castShadow
-        color="#fff1d6"
-        position={[-span * 0.72, span * 1.35, span * 0.62]}
-        intensity={0.55 + strength * 1.9}
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
-        shadow-camera-near={span * 0.05}
-        shadow-camera-far={span * 4}
-        shadow-camera-left={-shadowExtent}
-        shadow-camera-right={shadowExtent}
-        shadow-camera-top={shadowExtent}
-        shadow-camera-bottom={-shadowExtent}
-        shadow-bias={-0.00008}
-        shadow-normalBias={0.012}
-        shadow-radius={2.5}
-      />
-    </>
-  )
-}
-
-function Surface({
-  model,
-  mode,
-  minHeight,
-  maxHeight,
-  scaleX,
-  scaleY,
-  scaleZ,
-  lightStrength,
-  paletteBrightness,
-  textureMix,
-  showSection,
-  sectionIndex,
-  pointMarkingEnabled,
-  pointMarkers,
-  onPointerSample,
-  onAddPointMarker,
-  onRemovePointMarker,
-}: Omit<ViewerCanvasProps, 'showGrid' | 'viewRequest' | 'onFps' | 'interactionMode' | 'modelResetNonce'> & { model: ViewerModel }) {
-  const meshRef = useRef<THREE.Mesh>(null)
-  const texture = useMemo(() => {
-    if (!model.textureRgba || !model.textureWidth || !model.textureHeight) return undefined
-    const value = new THREE.DataTexture(
-      model.textureRgba,
-      model.textureWidth,
-      model.textureHeight,
-      THREE.RGBAFormat,
-    )
-    value.colorSpace = THREE.SRGBColorSpace
-    value.flipY = true
-    value.needsUpdate = true
-    return value
-  }, [model.textureHeight, model.textureRgba, model.textureWidth])
-  useEffect(() => () => texture?.dispose(), [texture])
-
-  const sectionPlane = useMemo(() => {
-    if (
-      !showSection
-      || model.kind !== 'zag'
-      || !model.sectionCount
-    ) return undefined
-
-    const row = Math.min(Math.max(0, sectionIndex), model.sectionCount - 1)
-    const z = (row / Math.max(1, model.sectionCount - 1)) * model.lengthMm
-    const heightSpan = Math.max(model.maxHeightMm - model.minHeightMm, 0.01)
-    const padding = heightSpan * 0.22
-    return {
-      z,
-      centerY: (model.minHeightMm + model.maxHeightMm) / 2,
-      height: heightSpan + padding * 2,
-    }
-  }, [model, sectionIndex, showSection])
-
-  const meshScale: [number, number, number] =
-    model.scaleOrder === 'zag' ? [scaleX, scaleZ, scaleY] : [scaleX, scaleY, scaleZ]
-  const meshPosition: [number, number, number] =
-    model.kind === 'zag'
-      ? [-(model.widthMm * scaleX) / 2, 0, -(model.lengthMm * scaleY) / 2]
-      : [-(model.widthMm * scaleX) / 2, 0, (model.lengthMm * scaleY) / 2]
-
-  const onMove = (event: ThreeEvent<PointerEvent>) => {
-    if (!meshRef.current) return
-    const local = meshRef.current.worldToLocal(event.point.clone())
-    const sample = model.kind === 'zag'
-      ? { xMm: local.x, yMm: local.z, zMm: local.y }
-      : { xMm: local.x, yMm: local.y, zMm: local.z }
-    onPointerSample(sample)
+function ViewerOrbitControls({ enabled, controlsRef, onCameraChange }: {
+  enabled: boolean
+  controlsRef: RefObject<OrbitControlsHandle | null>
+  onCameraChange?: (settings: ExportCameraSettings) => void
+}) {
+  const { camera } = useThree()
+  const emitChange = () => {
+    const controls = controlsRef.current
+    if (!controls || !onCameraChange) return
+    const offset = camera.position.clone().sub(controls.target)
+    const distance = Math.max(0.001, offset.length())
+    onCameraChange({
+      azimuthDeg: THREE.MathUtils.radToDeg(Math.atan2(offset.x, offset.z)),
+      elevationDeg: THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(offset.y / distance, -1, 1))),
+      distanceMm: distance,
+      targetX: controls.target.x,
+      targetY: controls.target.y,
+      targetZ: controls.target.z,
+    })
   }
-
-  const onClick = (event: ThreeEvent<MouseEvent>) => {
-    if (!pointMarkingEnabled || event.button !== 0 || event.delta > 4 || !meshRef.current) return
-    event.stopPropagation()
-    const local = meshRef.current.worldToLocal(event.point.clone())
-    onAddPointMarker(model.kind === 'zag'
-      ? { xMm: local.x, yMm: local.z, zMm: local.y }
-      : { xMm: local.x, yMm: local.y, zMm: local.z })
-  }
-
-  const markerRadius = Math.max(model.widthMm, model.lengthMm, 1) * 0.0045
-  const markerScale: [number, number, number] = model.scaleOrder === 'zag'
-    ? [1 / scaleX, 1 / scaleZ, 1 / scaleY]
-    : [1 / scaleX, 1 / scaleY, 1 / scaleZ]
-
   return (
-    <mesh
-      ref={meshRef}
-      geometry={model.geometry}
-      castShadow
-      receiveShadow
-      rotation-x={model.rotationX}
-      scale={meshScale}
-      position={meshPosition}
-      onClick={onClick}
-      onPointerMove={onMove}
-      onPointerOut={() => onPointerSample(undefined)}
-    >
-      {mode === 'height' && (
-        <HeightMaterial
-          geometry={model.geometry}
-          palette={model.palette}
-          minHeight={minHeight}
-          maxHeight={maxHeight}
-          heightAxis={model.heightAxis}
-          usesHeightAttribute={model.kind === 'zag'}
-          surfaceTexture={texture}
-          textureMix={model.kind === 'zag' ? textureMix : 0}
-          paletteBrightness={paletteBrightness}
-        />
-      )}
-      {mode === 'texture' && texture && <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.82} />}
-      {(mode === 'solid' || (mode === 'texture' && !texture)) && (
-        <meshStandardMaterial color="#aab3bd" side={THREE.DoubleSide} roughness={0.72} metalness={0.02} />
-      )}
-      {sectionPlane && (
-        <mesh
-          position={[model.widthMm / 2, sectionPlane.centerY, sectionPlane.z]}
-          renderOrder={10}
-          raycast={() => undefined}
-        >
-          <planeGeometry args={[model.widthMm * 1.015, sectionPlane.height]} />
-          <meshBasicMaterial
-            color="#a7c4d8"
-            transparent
-            opacity={0.13}
-            side={THREE.DoubleSide}
-            depthWrite={false}
-            toneMapped={false}
-          />
-        </mesh>
-      )}
-      {pointMarkers.map((marker) => {
-        const position: [number, number, number] = model.kind === 'zag'
-          ? [marker.xMm, marker.zMm, marker.yMm]
-          : [marker.xMm, marker.yMm, marker.zMm]
-        const heightMicrons = (marker.zMm * 1000).toFixed(1)
-        return (
-          <group key={marker.id} position={position} scale={markerScale}>
-            <mesh renderOrder={21} raycast={() => undefined}>
-              <sphereGeometry args={[markerRadius * 1.42, 18, 18]} />
-              <meshBasicMaterial color="#111419" depthTest={false} toneMapped={false} />
-            </mesh>
-            <mesh renderOrder={22} raycast={() => undefined}>
-              <sphereGeometry args={[markerRadius, 18, 18]} />
-              <meshBasicMaterial color="#ffd24a" depthTest={false} toneMapped={false} />
-            </mesh>
-            <Html
-              center
-              position={[0, markerRadius * 4.6, 0]}
-              style={{ pointerEvents: 'auto' }}
-              zIndexRange={[80, 40]}
-            >
-              <button
-                aria-label={`删除标记 P${marker.id}，高度 ${heightMicrons} 微米`}
-                className="point-marker-label"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onRemovePointMarker(marker.id)
-                }}
-                onPointerDown={(event) => event.stopPropagation()}
-                title="点击删除此标记"
-                type="button"
-              >
-                <strong>P{marker.id}</strong>
-                <span>Z {heightMicrons} µm</span>
-                <X aria-hidden="true" className="point-marker-delete-icon" size={11} strokeWidth={2.2} />
-              </button>
-            </Html>
-          </group>
-        )
-      })}
-    </mesh>
+    <OrbitControls
+      ref={controlsRef}
+      makeDefault
+      enabled={enabled}
+      enableDamping
+      dampingFactor={0.08}
+      onChange={emitChange}
+    />
   )
 }
 
@@ -376,7 +206,7 @@ function ModelManipulator({
       onPointerUp={finishDrag}
       onPointerCancel={finishDrag}
     >
-      <Surface model={model} {...surfaceProps} />
+      <SceneSurface model={model} {...surfaceProps} />
     </group>
   )
 }
@@ -424,7 +254,11 @@ export default function ViewerCanvas(props: ViewerCanvasProps) {
         />
       )}
       {props.model && <ModelManipulator {...props} model={props.model} />}
-      <OrbitControls ref={controlsRef} makeDefault enabled={props.interactionMode === 'camera'} enableDamping dampingFactor={0.08} />
+      <ViewerOrbitControls
+        controlsRef={controlsRef}
+        enabled={props.interactionMode === 'camera'}
+        onCameraChange={props.onCameraChange}
+      />
       <CameraRig model={props.model} request={props.viewRequest} controlsRef={controlsRef} />
       <GizmoHelper alignment="bottom-left" margin={[74, 68]}>
         <GizmoViewport axisColors={['#ef5555', '#4dce84', '#4e94ff']} labelColor="white" />

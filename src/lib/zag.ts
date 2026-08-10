@@ -1,5 +1,17 @@
 import JSZip from 'jszip'
 import type { CaptureSummary, ZagHeightField } from '../types'
+import {
+  FILE_LIMITS,
+  assertCrc32,
+  assertNotAborted,
+  validateCalibrationValue,
+  validateCaptureCount,
+  validatePaletteRange,
+  validateZagDimensions,
+  validateZagFileSize,
+  validateZipBudget,
+  type ZipEntryBudget,
+} from './fileLimits'
 
 const STORAGE = '9eedddb6-0cf2-4021-9ffc-4e46618e365b'
 const VALUE = 'e57e75b1-707b-4a6f-a095-1485b8b95efb'
@@ -31,36 +43,90 @@ function decodeText(bytes: Uint8Array): string {
 function extractNumber(xml: string, tag: string): number {
   const match = xml.match(new RegExp(`<${tag}>([^<]+)</${tag}>`))
   if (!match) throw new Error(`ZAG 中缺少 ${tag} 标定字段`)
-  return Number(match[1])
+  return validateCalibrationValue(Number(match[1]) * 1000, `${tag} `)
 }
 
-function prefixedBmpUrl(bytes: ArrayBuffer): string | undefined {
-  const view = new DataView(bytes)
-  if (bytes.byteLength < 16 || view.getUint8(8) !== 0x42 || view.getUint8(9) !== 0x4d) return undefined
-  const bmpLength = view.getUint32(10, true)
-  if (bmpLength <= 0 || bmpLength + 8 > bytes.byteLength) return undefined
-  return URL.createObjectURL(new Blob([bytes.slice(8, 8 + bmpLength)], { type: 'image/bmp' }))
+interface LoadedZipData {
+  compressedSize: number
+  uncompressedSize: number
+  crc32: number
+}
+
+type ZipEntryWithData = JSZip.JSZipObject & { _data?: LoadedZipData | Promise<unknown> }
+
+function loadedZipData(entry: JSZip.JSZipObject): LoadedZipData | undefined {
+  const data = (entry as ZipEntryWithData)._data
+  if (!data || data instanceof Promise) return undefined
+  if (
+    !Number.isSafeInteger(data.compressedSize)
+    || !Number.isSafeInteger(data.uncompressedSize)
+    || !Number.isInteger(data.crc32)
+  ) return undefined
+  return data
+}
+
+async function collectZipBudget(zip: JSZip, signal?: AbortSignal): Promise<ZipEntryBudget[]> {
+  const result: ZipEntryBudget[] = []
+  for (const entry of Object.values(zip.files)) {
+    assertNotAborted(signal)
+    const data = loadedZipData(entry)
+    if (entry.dir || data) {
+      result.push({
+        name: entry.name,
+        directory: entry.dir,
+        compressedSize: data?.compressedSize,
+        uncompressedSize: data?.uncompressedSize,
+      })
+      continue
+    }
+
+    // JSZip represents loaded zero-byte STORE entries as resolved promises
+    // instead of CompressedObject instances. Only that bounded case is accepted.
+    const bytes = await entry.async('uint8array')
+    if (bytes.byteLength !== 0) throw new Error(`无法确认 ZAG 条目大小：${entry.name}`)
+    result.push({ name: entry.name, directory: false, compressedSize: 0, uncompressedSize: 0 })
+  }
+  return result
 }
 
 export class ZagArchive {
   readonly fileName: string
   readonly captures: CaptureSummary[]
-  readonly previewUrl?: string
-  private readonly zip: JSZip
+  private readonly file: File
+  private initialZip?: JSZip
 
-  private constructor(fileName: string, zip: JSZip, captures: CaptureSummary[], previewUrl?: string) {
-    this.fileName = fileName
-    this.zip = zip
+  private constructor(file: File, captures: CaptureSummary[], initialZip: JSZip) {
+    this.fileName = file.name
+    this.file = file
     this.captures = captures
-    this.previewUrl = previewUrl
+    this.initialZip = initialZip
   }
 
-  static async open(file: File, onProgress?: (progress: number) => void): Promise<ZagArchive> {
+  private static async loadZip(file: File, signal?: AbortSignal): Promise<JSZip> {
+    validateZagFileSize(file.size)
+    assertNotAborted(signal)
     const bytes = await file.arrayBuffer()
-    const previewUrl = prefixedBmpUrl(bytes)
-    const zip = await JSZip.loadAsync(bytes, {
-      checkCRC32: false,
-    })
+    assertNotAborted(signal)
+    const zip = await JSZip.loadAsync(bytes, { checkCRC32: false })
+    validateZipBudget(await collectZipBudget(zip, signal))
+    return zip
+  }
+
+  private async takeZip(signal?: AbortSignal): Promise<JSZip> {
+    if (this.initialZip) {
+      const zip = this.initialZip
+      this.initialZip = undefined
+      return zip
+    }
+    return ZagArchive.loadZip(this.file, signal)
+  }
+
+  static async open(
+    file: File,
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal,
+  ): Promise<ZagArchive> {
+    const zip = await ZagArchive.loadZip(file, signal)
     onProgress?.(0.25)
 
     const suffix = `/${KEYS.captureName}/${VALUE}`
@@ -68,87 +134,152 @@ export class ZagArchive {
       .filter((path) => path.includes(`/${STORAGE}/`) && path.endsWith(suffix))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
 
-    if (!captureNamePaths.length) throw new Error('没有在 ZAG 中找到 VR 高度采集记录')
+    validateCaptureCount(captureNamePaths.length)
 
     const captures: CaptureSummary[] = []
     for (let index = 0; index < captureNamePaths.length; index += 1) {
+      assertNotAborted(signal)
       const namePath = captureNamePaths[index]
       const basePath = namePath.slice(0, -suffix.length)
-      const read = async (key: string) => {
-        const entry = zip.file(`${basePath}/${key}/${VALUE}`)
-        if (!entry) throw new Error(`ZAG 采集记录缺少字段 ${key}`)
-        return entry.async('uint8array')
-      }
       const [nameBytes, modelBytes, serialBytes, widthBytes, heightBytes, minBytes, maxBytes, calibrationBytes] =
         await Promise.all([
-          read(KEYS.captureName),
-          read(KEYS.model),
-          read(KEYS.serial),
-          read(KEYS.width),
-          read(KEYS.height),
-          read(KEYS.paletteMin),
-          read(KEYS.paletteMax),
-          read(KEYS.calibration),
+          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.captureName}/${VALUE}`, 4_096, undefined, signal),
+          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.model}/${VALUE}`, 4_096, undefined, signal),
+          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.serial}/${VALUE}`, 4_096, undefined, signal),
+          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.width}/${VALUE}`, 4, 4, signal),
+          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.height}/${VALUE}`, 4, 4, signal),
+          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.paletteMin}/${VALUE}`, 8, 8, signal),
+          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.paletteMax}/${VALUE}`, 8, 8, signal),
+          ZagArchive.readZipEntry(
+            zip,
+            `${basePath}/${KEYS.calibration}/${VALUE}`,
+            FILE_LIMITS.zagMetadataBytes,
+            undefined,
+            signal,
+          ),
         ])
       const calibration = decodeText(calibrationBytes)
+      const width = dataView(widthBytes).getUint32(0, true)
+      const height = dataView(heightBytes).getUint32(0, true)
+      validateZagDimensions(width, height)
+      const paletteMinMm = dataView(minBytes).getFloat64(0, true) * 1000
+      const paletteMaxMm = dataView(maxBytes).getFloat64(0, true) * 1000
+      validatePaletteRange(paletteMinMm, paletteMaxMm)
       captures.push({
         id: basePath,
         name: decodeText(nameBytes),
         basePath,
-        width: dataView(widthBytes).getUint32(0, true),
-        height: dataView(heightBytes).getUint32(0, true),
+        width,
+        height,
         model: decodeText(modelBytes),
         serial: decodeText(serialBytes),
-        xyPitchMm: extractNumber(calibration, 'MeterPerPixel') * 1000,
-        zUnitMm: extractNumber(calibration, 'MeterPerUnit') * 1000,
-        paletteMinMm: dataView(minBytes).getFloat64(0, true) * 1000,
-        paletteMaxMm: dataView(maxBytes).getFloat64(0, true) * 1000,
+        xyPitchMm: extractNumber(calibration, 'MeterPerPixel'),
+        zUnitMm: extractNumber(calibration, 'MeterPerUnit'),
+        paletteMinMm,
+        paletteMaxMm,
       })
       onProgress?.(0.25 + ((index + 1) / captureNamePaths.length) * 0.25)
     }
 
-    return new ZagArchive(file.name, zip, captures, previewUrl)
+    return new ZagArchive(file, captures, zip)
   }
 
-  async loadCapture(capture: CaptureSummary, onProgress?: (progress: number) => void): Promise<ZagHeightField> {
-    const read = async (key: string) => {
-      const entry = this.zip.file(`${capture.basePath}/${key}/${VALUE}`)
-      if (!entry) throw new Error(`ZAG 采集记录缺少字段 ${key}`)
-      return entry.async('uint8array')
+  private static async readZipEntry(
+    zip: JSZip,
+    path: string,
+    maxBytes: number,
+    expectedBytes?: number,
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    assertNotAborted(signal)
+    const entry = zip.file(path)
+    if (!entry) throw new Error(`ZAG 采集记录缺少字段 ${path.split('/').at(-2) ?? path}`)
+    const data = loadedZipData(entry)
+    if (!data) throw new Error(`无法验证 ZAG 条目完整性：${entry.name}`)
+    if (data.uncompressedSize > maxBytes) throw new Error(`ZAG 条目超过允许大小：${entry.name}`)
+    if (expectedBytes !== undefined && data.uncompressedSize !== expectedBytes) {
+      throw new Error(`ZAG 条目尺寸不匹配：${entry.name}`)
     }
+    const bytes = await entry.async('uint8array')
+    assertNotAborted(signal)
+    if (bytes.byteLength !== data.uncompressedSize || bytes.byteLength > maxBytes) {
+      throw new Error(`ZAG 条目解压尺寸不匹配：${entry.name}`)
+    }
+    assertCrc32(bytes, data.crc32, entry.name)
+    return bytes
+  }
+
+  async loadCapture(
+    capture: CaptureSummary,
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal,
+  ): Promise<ZagHeightField> {
+    const dimensions = validateZagDimensions(capture.width, capture.height)
+    const zip = await this.takeZip(signal)
 
     onProgress?.(0.52)
-    const [heightBytes, mask, palette] = await Promise.all([
-      read(KEYS.heightImage),
-      read(KEYS.mask),
-      read(KEYS.palette),
+    const colorPath = `${capture.basePath}/${KEYS.color}/${VALUE}`
+    const [heightBytes, mask, palette, color] = await Promise.all([
+      ZagArchive.readZipEntry(
+        zip,
+        `${capture.basePath}/${KEYS.heightImage}/${VALUE}`,
+        dimensions.heightBytes,
+        dimensions.heightBytes,
+        signal,
+      ),
+      ZagArchive.readZipEntry(
+        zip,
+        `${capture.basePath}/${KEYS.mask}/${VALUE}`,
+        dimensions.maskBytes,
+        dimensions.maskBytes,
+        signal,
+      ),
+      ZagArchive.readZipEntry(
+        zip,
+        `${capture.basePath}/${KEYS.palette}/${VALUE}`,
+        FILE_LIMITS.zagPaletteBytes,
+        undefined,
+        signal,
+      ),
+      zip.file(colorPath)
+        ? ZagArchive.readZipEntry(zip, colorPath, dimensions.colorBytes, dimensions.colorBytes, signal)
+        : Promise.resolve(undefined),
     ])
     onProgress?.(0.78)
 
-    if (heightBytes.byteLength !== capture.width * capture.height * 4) {
-      throw new Error('ZAG 高度矩阵尺寸与宽高字段不匹配')
-    }
     const heights = new Int32Array(
       heightBytes.buffer.slice(heightBytes.byteOffset, heightBytes.byteOffset + heightBytes.byteLength),
     )
-    const maskStride = Math.ceil(capture.width / 4) * 4
-    if (mask.byteLength !== maskStride * capture.height) throw new Error('ZAG 掩码尺寸不匹配')
 
     return {
       capture,
       heights,
       mask,
-      maskStride,
+      maskStride: dimensions.maskStride,
       palette,
+      color,
+      colorStride: color ? dimensions.colorStride : undefined,
     }
   }
 
-  async loadTexture(capture: CaptureSummary): Promise<{ color: Uint8Array; colorStride: number }> {
-    const entry = this.zip.file(`${capture.basePath}/${KEYS.color}/${VALUE}`)
-    if (!entry) throw new Error('这条 ZAG 采集记录不包含表面纹理')
-    const color = await entry.async('uint8array')
-    const colorStride = Math.ceil((capture.width * 3) / 4) * 4
-    if (color.byteLength !== colorStride * capture.height) throw new Error('ZAG 纹理尺寸不匹配')
-    return { color, colorStride }
+  async loadTexture(
+    capture: CaptureSummary,
+    signal?: AbortSignal,
+  ): Promise<{ color: Uint8Array; colorStride: number }> {
+    const dimensions = validateZagDimensions(capture.width, capture.height)
+    const zip = await this.takeZip(signal)
+    const color = await ZagArchive.readZipEntry(
+      zip,
+      `${capture.basePath}/${KEYS.color}/${VALUE}`,
+      dimensions.colorBytes,
+      dimensions.colorBytes,
+      signal,
+    ).catch((cause) => {
+      if (cause instanceof Error && cause.message.includes('缺少字段')) {
+        throw new Error('这条 ZAG 采集记录不包含表面纹理')
+      }
+      throw cause
+    })
+    return { color, colorStride: dimensions.colorStride }
   }
 }
