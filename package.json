@@ -23,7 +23,7 @@
     "@react-three/fiber": "^9.4.0",
     "fix-webm-duration": "^1.0.6",
     "jszip": "^3.10.1",
-    "lucide-react": "^0.468.0",
+    "lucide-react": "^1.29.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "three": "^0.179.1"
