@@ -5,6 +5,8 @@ import ExportWorkspace from './components/ExportWorkspace'
 import Inspector from './components/Inspector'
 import ViewerCanvas from './components/ViewerCanvas'
 import { stlFileToModel, zagFieldToModel, zagTextureToRgba } from './lib/models'
+import { downloadObj, createViewerModelObj } from './lib/objExportClient'
+import type { ObjScaleMode } from './lib/objExport'
 import { paletteCss } from './lib/palette'
 import { ZagArchive } from './lib/zag'
 import type { ExportCameraSettings, InteractionMode, PointMarker, PointerSample, SurfaceMode, ViewPreset, ViewerModel } from './types'
@@ -15,6 +17,11 @@ function formatNumber(value: number, digits = 3): string {
 
 function isAbortError(cause: unknown): boolean {
   return cause instanceof DOMException && cause.name === 'AbortError'
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(0.1, bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 interface LoadedTexture {
@@ -53,6 +60,11 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string>()
+  const [objScaleMode, setObjScaleMode] = useState<ObjScaleMode>('true')
+  const [objExporting, setObjExporting] = useState(false)
+  const [objExportProgress, setObjExportProgress] = useState(0)
+  const [objExportMessage, setObjExportMessage] = useState<string>()
+  const [objExportError, setObjExportError] = useState<string>()
   const [viewRequest, setViewRequest] = useState<{ preset: ViewPreset; nonce: number }>({ preset: 'iso', nonce: 0 })
   const [viewerCamera, setViewerCamera] = useState<ExportCameraSettings>()
   const [modelResetNonce, setModelResetNonce] = useState(0)
@@ -60,6 +72,7 @@ export default function App() {
   const pointMarkerSequence = useRef(0)
   const modelRef = useRef<ViewerModel | undefined>(undefined)
   const loadAbortRef = useRef<AbortController | undefined>(undefined)
+  const objExportAbortRef = useRef<AbortController | undefined>(undefined)
   const textureQueueRef = useRef<Promise<void>>(Promise.resolve())
   const textureJobsRef = useRef(new Map<string, Promise<LoadedTexture>>())
 
@@ -70,6 +83,12 @@ export default function App() {
   }, [])
 
   const applyModel = useCallback((next: ViewerModel) => {
+    objExportAbortRef.current?.abort()
+    objExportAbortRef.current = undefined
+    setObjExporting(false)
+    setObjExportProgress(0)
+    setObjExportMessage(undefined)
+    setObjExportError(undefined)
     setModel((previous) => {
       previous?.geometry.dispose()
       return next
@@ -105,6 +124,7 @@ export default function App() {
 
   useEffect(() => () => {
     loadAbortRef.current?.abort()
+    objExportAbortRef.current?.abort()
     modelRef.current?.geometry.dispose()
   }, [])
 
@@ -296,6 +316,37 @@ export default function App() {
     anchor.click()
   }
 
+  const exportObj = useCallback(async () => {
+    if (!model || model.kind !== 'zag' || objExporting) return
+    objExportAbortRef.current?.abort()
+    const controller = new AbortController()
+    objExportAbortRef.current = controller
+    setObjExporting(true)
+    setObjExportProgress(0)
+    setObjExportMessage(undefined)
+    setObjExportError(undefined)
+    try {
+      const result = await createViewerModelObj(model, {
+        scaleMode: objScaleMode,
+        scaleX,
+        scaleY,
+        scaleZ,
+        signal: controller.signal,
+        onProgress: setObjExportProgress,
+      })
+      downloadObj(result)
+      setObjExportProgress(1)
+      setObjExportMessage(`已生成并下载 ${result.fileName}（${formatFileSize(result.size)}）`)
+    } catch (cause) {
+      if (!isAbortError(cause)) setObjExportError(cause instanceof Error ? cause.message : 'OBJ 导出失败')
+    } finally {
+      if (objExportAbortRef.current === controller) {
+        objExportAbortRef.current = undefined
+        setObjExporting(false)
+      }
+    }
+  }, [model, objExporting, objScaleMode, scaleX, scaleY, scaleZ])
+
   const onDrop = (event: React.DragEvent) => {
     event.preventDefault()
     void loadFiles(event.dataTransfer.files)
@@ -474,6 +525,17 @@ export default function App() {
           showProfile={showProfile}
           onShowGrid={setShowGrid}
           onShowProfile={setShowProfile}
+          objScaleMode={objScaleMode}
+          objExporting={objExporting}
+          objExportProgress={objExportProgress}
+          objExportMessage={objExportMessage}
+          objExportError={objExportError}
+          onObjScaleMode={(value) => {
+            setObjScaleMode(value)
+            setObjExportMessage(undefined)
+            setObjExportError(undefined)
+          }}
+          onExportObj={() => void exportObj()}
         />
       </div>
 

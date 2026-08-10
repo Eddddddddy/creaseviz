@@ -159,6 +159,21 @@ button { color: inherit; }
 .scale-presets button { height: 27px; color: #4c5661; background: #fff; border: 1px solid #c4cbd2; border-radius: 4px; font-size: 10px; cursor: pointer; }
 .scale-presets button.is-active { color: #fff; background: #247fdb; border-color: #247fdb; }
 .secondary-button { width: 100%; height: 30px; color: #3f4852; background: #f9fafb; border: 1px solid #bec6ce; border-radius: 5px; font-size: 10px; cursor: pointer; }
+.obj-scale-toggle { display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; margin-bottom: 9px; border: 1px solid #bec6ce; border-radius: 5px; }
+.obj-scale-toggle button { height: 29px; color: #59636e; background: #f8f9fa; border: 0; border-right: 1px solid #c8ced5; font-size: 10px; cursor: pointer; }
+.obj-scale-toggle button:last-child { border-right: 0; }
+.obj-scale-toggle button.is-active { color: #fff; background: #217fe0; }
+.obj-scale-toggle button:disabled { opacity: .55; cursor: default; }
+.obj-export-description { margin: 0 0 7px; color: #35404a; font-size: 10px; font-weight: 620; font-variant-numeric: tabular-nums; }
+.obj-export-note { margin: 0 0 9px; color: #727d87; font-size: 9px; line-height: 1.55; }
+.obj-export-progress { height: 4px; margin: 9px 0 7px; overflow: hidden; background: #d5dbe1; border-radius: 999px; }
+.obj-export-progress i { display: block; height: 100%; background: #2589e7; transition: width .12s linear; }
+.obj-download-button { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; height: 32px; color: #fff; background: #267fd5; border: 1px solid #358fe0; border-radius: 5px; font-size: 10px; font-weight: 650; cursor: pointer; }
+.obj-download-button:hover:not(:disabled) { background: #2d8ce5; border-color: #4ca2ef; }
+.obj-download-button:disabled { opacity: .55; cursor: default; }
+.obj-export-status { margin: 8px 0 0; padding: 7px 8px; border: 1px solid; border-radius: 4px; font-size: 9px; line-height: 1.45; word-break: break-word; }
+.obj-export-status.is-success { color: #21623f; background: #e5f6ed; border-color: #aedac1; }
+.obj-export-status.is-error { color: #8a3733; background: #ffebe9; border-color: #e4aaa5; }
 .layer-row { display: grid; grid-template-columns: 20px 1fr auto; align-items: center; width: 100%; padding: 8px 5px; color: #49535e; background: transparent; border: 0; border-bottom: 1px solid #d7dce1; font-size: 11px; text-align: left; cursor: pointer; }
 .layer-row svg { color: #277fd3; }.layer-state { color: #929aa3; font-size: 9px; }.layer-state.is-on { color: #1f85dc; }
 
