@@ -1,0 +1,17 @@
+.DS_Store
+node_modules/
+dist/
+output/
+
+*.zag
+*.stl
+*.log
+
+analysis_output/__pycache__/
+analysis_output/*.bmp
+analysis_output/*.csv
+analysis_output/*.ipynb
+analysis_output/*.json
+analysis_output/*.png
+analysis_output/*.sqlite
+
