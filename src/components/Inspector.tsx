@@ -1,6 +1,8 @@
-import { Box, Download, Eye, EyeOff, Image as ImageIcon, Layers3, Ratio, ScanLine, SlidersHorizontal } from 'lucide-react'
+import { Eye, EyeOff, Image as ImageIcon, Layers3, Ratio, ScanLine, SlidersHorizontal } from 'lucide-react'
 import type { ObjScaleMode } from '../lib/objExport'
-import type { CaptureSummary, SurfaceMode, ViewerModel } from '../types'
+import type { CaptureSummary, ObjDetail, RegionBounds, SurfaceMode, ViewerModel } from '../types'
+import RegionSelection from './RegionSelection'
+import ObjExportPanel from './ObjExportPanel'
 
 interface InspectorProps {
   model?: ViewerModel
@@ -37,6 +39,14 @@ interface InspectorProps {
   objExportError?: string
   onObjScaleMode: (value: ObjScaleMode) => void
   onExportObj: () => void
+  regionEnabled: boolean
+  region?: RegionBounds
+  regionDisabled: boolean
+  onRegionEnabled: (value: boolean) => void
+  onRegion: (value: RegionBounds) => void
+  onFocusRegion: () => void
+  objDetail: ObjDetail
+  onObjDetail: (value: ObjDetail) => void
 }
 
 function AppearanceControl({ label, value, onChange, disabled = false, min = 0, max = 1 }: {
@@ -125,6 +135,14 @@ export default function Inspector(props: InspectorProps) {
         {props.model?.warning && <p className="source-warning">{props.model.warning}</p>}
       </section>
 
+      {props.model?.kind === 'zag' && props.region && (
+        <RegionSelection model={props.model} enabled={props.regionEnabled} bounds={props.region}
+          disabled={props.regionDisabled} onEnabled={props.onRegionEnabled} onBounds={props.onRegion}
+          onFocus={props.onFocusRegion} />
+      )}
+
+      <ObjExportPanel {...props} />
+
       <section className="inspector-section">
         <h2><SlidersHorizontal size={17} />深度着色</h2>
         <div className="segmented-control">
@@ -157,50 +175,6 @@ export default function Inspector(props: InspectorProps) {
         </div>
         <button className="secondary-button" onClick={() => { props.onScaleX(1); props.onScaleY(1); props.onScaleZ(1) }}>恢复真实比例 1:1:1</button>
         {props.scaleZ !== 1 && <p className="scale-notice">当前 Z 为 {props.scaleZ.toFixed(2)}× 夸张显示，测量数值保持真实。</p>}
-      </section>
-
-      <section className="inspector-section obj-export-section">
-        <h2><Box size={17} />模型导出</h2>
-        <div className="obj-scale-toggle" role="group" aria-label="OBJ 导出比例">
-          <button
-            aria-pressed={props.objScaleMode === 'true'}
-            className={props.objScaleMode === 'true' ? 'is-active' : ''}
-            disabled={props.objExporting}
-            onClick={() => props.onObjScaleMode('true')}
-          >真实比例</button>
-          <button
-            aria-pressed={props.objScaleMode === 'display'}
-            className={props.objScaleMode === 'display' ? 'is-active' : ''}
-            disabled={props.objExporting}
-            onClick={() => props.onObjScaleMode('display')}
-          >当前显示比例</button>
-        </div>
-        {props.model?.kind === 'zag' ? (
-          <>
-            <p className="obj-export-description">
-              OBJ · 毫米 · Z 为高度 · {props.model.triangleCount.toLocaleString()} 个三角面
-            </p>
-            <p className="obj-export-note">
-              {props.objScaleMode === 'true'
-                ? '按 1:1:1 输出，不应用界面中的高度夸张。'
-                : `应用 X ${props.scaleX.toFixed(2)}×、Y ${props.scaleY.toFixed(2)}×、Z ${props.scaleZ.toFixed(2)}×。`}
-              {' '}导出当前加载网格，保留 UV，不包含高度色或纹理图片。
-            </p>
-            {props.objExporting && (
-              <div className="obj-export-progress" aria-label={`OBJ 生成进度 ${Math.round(props.objExportProgress * 100)}%`}>
-                <i style={{ width: `${props.objExportProgress * 100}%` }} />
-              </div>
-            )}
-            <button className="obj-download-button" disabled={props.objExporting} onClick={props.onExportObj}>
-              <Download size={15} />
-              {props.objExporting ? `正在生成 ${Math.round(props.objExportProgress * 100)}%` : '下载 OBJ'}
-            </button>
-            {props.objExportMessage && <p className="obj-export-status is-success">{props.objExportMessage}</p>}
-            {props.objExportError && <p className="obj-export-status is-error">{props.objExportError}</p>}
-          </>
-        ) : (
-          <p className="obj-export-note">加载 ZAG 高度场后可导出 OBJ；STL 已是通用三角网格格式。</p>
-        )}
       </section>
 
       <section className="inspector-section">

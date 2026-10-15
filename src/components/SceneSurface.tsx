@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { Html } from '@react-three/drei'
-import type { ThreeEvent } from '@react-three/fiber'
+import { useFrame, type ThreeEvent } from '@react-three/fiber'
 import { X } from 'lucide-react'
 import * as THREE from 'three'
-import type { PointMarker, PointerSample, SurfaceMode, ViewerModel } from '../types'
+import type { PointMarker, PointerSample, RegionBounds, SurfaceMode, ViewerModel } from '../types'
 import HeightMaterial from './HeightMaterial'
 
 export interface SceneSurfaceProps {
@@ -20,6 +20,7 @@ export interface SceneSurfaceProps {
   sectionIndex?: number
   pointMarkingEnabled?: boolean
   pointMarkers?: PointMarker[]
+  region?: RegionBounds
   onPointerSample?: (sample?: PointerSample) => void
   onAddPointMarker?: (sample: PointerSample) => void
   onRemovePointMarker?: (markerId: number) => void
@@ -67,11 +68,35 @@ export function SceneSurface({
   sectionIndex = 0,
   pointMarkingEnabled = false,
   pointMarkers = [],
+  region,
   onPointerSample,
   onAddPointMarker,
   onRemovePointMarker,
 }: SceneSurfaceProps) {
   const meshRef = useRef<THREE.Mesh>(null)
+  const localPlanes = useMemo(() => region ? [
+    new THREE.Plane(new THREE.Vector3(1, 0, 0), -region.x[0]),
+    new THREE.Plane(new THREE.Vector3(-1, 0, 0), region.x[1]),
+    new THREE.Plane(new THREE.Vector3(0, 0, 1), -region.y[0]),
+    new THREE.Plane(new THREE.Vector3(0, 0, -1), region.y[1]),
+    new THREE.Plane(new THREE.Vector3(0, 1, 0), -region.z[0]),
+    new THREE.Plane(new THREE.Vector3(0, -1, 0), region.z[1]),
+  ] : [], [region])
+  const clippingPlanes = useMemo(() => localPlanes.map((plane) => plane.clone()), [localPlanes])
+  const selectionEdges = useMemo(() => {
+    const box = new THREE.BoxGeometry(1, 1, 1)
+    const edges = new THREE.EdgesGeometry(box)
+    box.dispose()
+    return edges
+  }, [])
+  useEffect(() => () => selectionEdges.dispose(), [selectionEdges])
+  useFrame(() => {
+    if (!meshRef.current || !clippingPlanes.length) return
+    meshRef.current.updateWorldMatrix(true, false)
+    for (let index = 0; index < clippingPlanes.length; index += 1) {
+      clippingPlanes[index].copy(localPlanes[index]).applyMatrix4(meshRef.current.matrixWorld)
+    }
+  })
   const texture = useMemo(() => {
     if (!model.textureRgba || !model.textureWidth || !model.textureHeight) return undefined
     const value = new THREE.DataTexture(
@@ -111,6 +136,9 @@ export function SceneSurface({
   const sampleAtEvent = (event: ThreeEvent<PointerEvent | MouseEvent>): PointerSample | undefined => {
     if (!meshRef.current) return undefined
     const local = meshRef.current.worldToLocal(event.point.clone())
+    if (region && (local.x < region.x[0] || local.x > region.x[1]
+      || local.z < region.y[0] || local.z > region.y[1]
+      || local.y < region.z[0] || local.y > region.z[1])) return undefined
     return model.kind === 'zag'
       ? { xMm: local.x, yMm: local.z, zMm: local.y }
       : { xMm: local.x, yMm: local.y, zMm: local.z }
@@ -157,11 +185,23 @@ export function SceneSurface({
           surfaceTexture={texture}
           textureMix={model.kind === 'zag' ? textureMix : 0}
           paletteBrightness={paletteBrightness}
+          clippingPlanes={clippingPlanes}
         />
       )}
-      {mode === 'texture' && texture && <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.82} />}
+      {mode === 'texture' && texture && <meshStandardMaterial map={texture} side={THREE.DoubleSide} roughness={0.82} clippingPlanes={clippingPlanes} clipShadows />}
       {(mode === 'solid' || (mode === 'texture' && !texture)) && (
-        <meshStandardMaterial color="#aab3bd" side={THREE.DoubleSide} roughness={0.72} metalness={0.02} />
+        <meshStandardMaterial color="#aab3bd" side={THREE.DoubleSide} roughness={0.72} metalness={0.02} clippingPlanes={clippingPlanes} clipShadows />
+      )}
+      {region && (
+        <lineSegments
+          geometry={selectionEdges}
+          position={[(region.x[0] + region.x[1]) / 2, (region.z[0] + region.z[1]) / 2, (region.y[0] + region.y[1]) / 2]}
+          scale={[region.x[1] - region.x[0], region.z[1] - region.z[0], region.y[1] - region.y[0]]}
+          raycast={() => undefined}
+          renderOrder={15}
+        >
+          <lineBasicMaterial color="#78bfff" transparent opacity={0.55} depthWrite={false} toneMapped={false} />
+        </lineSegments>
       )}
       {sectionPlane && (
         <mesh
@@ -177,10 +217,15 @@ export function SceneSurface({
             side={THREE.DoubleSide}
             depthWrite={false}
             toneMapped={false}
+            clippingPlanes={clippingPlanes}
           />
         </mesh>
       )}
-      {pointMarkers.map((marker) => {
+      {pointMarkers.filter((marker) => !region || (
+        marker.xMm >= region.x[0] && marker.xMm <= region.x[1]
+        && marker.yMm >= region.y[0] && marker.yMm <= region.y[1]
+        && marker.zMm >= region.z[0] && marker.zMm <= region.z[1]
+      )).map((marker) => {
         const position: [number, number, number] = model.kind === 'zag'
           ? [marker.xMm, marker.zMm, marker.yMm]
           : [marker.xMm, marker.yMm, marker.zMm]

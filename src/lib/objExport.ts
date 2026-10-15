@@ -1,3 +1,5 @@
+import type { RegionBounds } from '../types'
+
 export type ObjScaleMode = 'true' | 'display'
 
 export const OBJ_LIMITS = {
@@ -16,12 +18,15 @@ export interface ObjMeshInput {
   scaleY: number
   scaleZ: number
   scaleMode: ObjScaleMode
+  region?: RegionBounds
+  sampleStep?: number
 }
 
 export interface ObjMeshSummary {
   vertexCount: number
   triangleCount: number
   size: number
+  sampleStep?: number
 }
 
 function requireScale(value: number, label: string): void {
@@ -32,6 +37,10 @@ function objNumber(value: number): string {
   if (!Number.isFinite(value)) throw new Error('OBJ 顶点包含无效数值')
   const normalized = Math.abs(value) < 0.0000005 ? 0 : value
   return normalized.toFixed(6).replace(/\.?0+$/, '')
+}
+
+function clampBoundary(value: number, range?: [number, number]): number {
+  return range ? Math.max(range[0], Math.min(range[1], value)) : value
 }
 
 export function safeObjName(value: string): string {
@@ -80,6 +89,8 @@ export function createObjBlob(
     '# Units: millimeters\n',
     '# Axes: X = scan width, Y = scan length, Z = measured height\n',
     `# Scale: ${scaleDescription}\n`,
+    ...(input.region ? [`# Region (mm, before scale): X ${input.region.x.join('..')}; Y ${input.region.y.join('..')}; Z ${input.region.z.join('..')}\n`] : []),
+    ...(input.sampleStep ? [`# Source sample step: ${input.sampleStep} pixel(s)\n`] : []),
     `# Vertices: ${vertexCount}; Triangles: ${triangleCount}\n`,
     `o ${objectName}\n`,
   ]
@@ -98,9 +109,9 @@ export function createObjBlob(
     const offset = index * 3
     // Viewer coordinates are X=width, Y=height, Z=scan length. OBJ is exported
     // in measurement coordinates so downstream tools see Z as the height axis.
-    const x = input.positions[offset] * input.scaleX
-    const y = input.positions[offset + 2] * input.scaleY
-    const z = input.positions[offset + 1] * input.scaleZ
+    const x = clampBoundary(input.positions[offset], input.region?.x) * input.scaleX
+    const y = clampBoundary(input.positions[offset + 2], input.region?.y) * input.scaleY
+    const z = clampBoundary(input.positions[offset + 1], input.region?.z) * input.scaleZ
     lines.push(`v ${objNumber(x)} ${objNumber(y)} ${objNumber(z)}`)
     completedOperations += 1
     if (lines.length >= OBJ_LIMITS.linesPerChunk) flush()
@@ -138,5 +149,5 @@ export function createObjBlob(
   onProgress?.(1)
 
   const blob = new Blob(parts, { type: 'text/plain;charset=utf-8' })
-  return { blob, summary: { vertexCount, triangleCount, size: blob.size } }
+  return { blob, summary: { vertexCount, triangleCount, size: blob.size, sampleStep: input.sampleStep } }
 }

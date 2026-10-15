@@ -5,6 +5,7 @@ import { extname } from 'node:path'
 const prohibitedExtensions = new Set([
   '.zag',
   '.stl',
+  '.obj',
   '.sqlite',
   '.webm',
   '.mp4',

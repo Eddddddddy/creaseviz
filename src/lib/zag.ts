@@ -1,5 +1,5 @@
-import JSZip from 'jszip'
 import type { CaptureSummary, ZagHeightField } from '../types'
+import { FileZipArchive } from './fileZip'
 import {
   FILE_LIMITS,
   assertCrc32,
@@ -9,8 +9,6 @@ import {
   validatePaletteRange,
   validateZagDimensions,
   validateZagFileSize,
-  validateZipBudget,
-  type ZipEntryBudget,
 } from './fileLimits'
 
 const STORAGE = '9eedddb6-0cf2-4021-9ffc-4e46618e365b'
@@ -46,79 +44,26 @@ function extractNumber(xml: string, tag: string): number {
   return validateCalibrationValue(Number(match[1]) * 1000, `${tag} `)
 }
 
-interface LoadedZipData {
-  compressedSize: number
-  uncompressedSize: number
-  crc32: number
-}
-
-type ZipEntryWithData = JSZip.JSZipObject & { _data?: LoadedZipData | Promise<unknown> }
-
-function loadedZipData(entry: JSZip.JSZipObject): LoadedZipData | undefined {
-  const data = (entry as ZipEntryWithData)._data
-  if (!data || data instanceof Promise) return undefined
-  if (
-    !Number.isSafeInteger(data.compressedSize)
-    || !Number.isSafeInteger(data.uncompressedSize)
-    || !Number.isInteger(data.crc32)
-  ) return undefined
-  return data
-}
-
-async function collectZipBudget(zip: JSZip, signal?: AbortSignal): Promise<ZipEntryBudget[]> {
-  const result: ZipEntryBudget[] = []
-  for (const entry of Object.values(zip.files)) {
-    assertNotAborted(signal)
-    const data = loadedZipData(entry)
-    if (entry.dir || data) {
-      result.push({
-        name: entry.name,
-        directory: entry.dir,
-        compressedSize: data?.compressedSize,
-        uncompressedSize: data?.uncompressedSize,
-      })
-      continue
-    }
-
-    // JSZip represents loaded zero-byte STORE entries as resolved promises
-    // instead of CompressedObject instances. Only that bounded case is accepted.
-    const bytes = await entry.async('uint8array')
-    if (bytes.byteLength !== 0) throw new Error(`无法确认 ZAG 条目大小：${entry.name}`)
-    result.push({ name: entry.name, directory: false, compressedSize: 0, uncompressedSize: 0 })
-  }
-  return result
-}
-
 export class ZagArchive {
   readonly fileName: string
   readonly captures: CaptureSummary[]
-  private readonly file: File
-  private initialZip?: JSZip
+  private readonly zip: FileZipArchive
 
-  private constructor(file: File, captures: CaptureSummary[], initialZip: JSZip) {
+  private constructor(file: File, captures: CaptureSummary[], zip: FileZipArchive) {
     this.fileName = file.name
-    this.file = file
     this.captures = captures
-    this.initialZip = initialZip
+    this.zip = zip
   }
 
-  private static async loadZip(file: File, signal?: AbortSignal): Promise<JSZip> {
+  private static async loadZip(file: File, signal?: AbortSignal): Promise<FileZipArchive> {
     validateZagFileSize(file.size)
     assertNotAborted(signal)
-    const bytes = await file.arrayBuffer()
-    assertNotAborted(signal)
-    const zip = await JSZip.loadAsync(bytes, { checkCRC32: false })
-    validateZipBudget(await collectZipBudget(zip, signal))
-    return zip
+    return FileZipArchive.open(file, signal)
   }
 
-  private async takeZip(signal?: AbortSignal): Promise<JSZip> {
-    if (this.initialZip) {
-      const zip = this.initialZip
-      this.initialZip = undefined
-      return zip
-    }
-    return ZagArchive.loadZip(this.file, signal)
+  private async takeZip(signal?: AbortSignal): Promise<FileZipArchive> {
+    assertNotAborted(signal)
+    return this.zip
   }
 
   static async open(
@@ -144,12 +89,20 @@ export class ZagArchive {
       const [nameBytes, modelBytes, serialBytes, widthBytes, heightBytes, minBytes, maxBytes, calibrationBytes] =
         await Promise.all([
           ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.captureName}/${VALUE}`, 4_096, undefined, signal),
-          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.model}/${VALUE}`, 4_096, undefined, signal),
-          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.serial}/${VALUE}`, 4_096, undefined, signal),
+          zip.file(`${basePath}/${KEYS.model}/${VALUE}`)
+            ? ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.model}/${VALUE}`, 4_096, undefined, signal)
+            : Promise.resolve(new Uint8Array()),
+          zip.file(`${basePath}/${KEYS.serial}/${VALUE}`)
+            ? ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.serial}/${VALUE}`, 4_096, undefined, signal)
+            : Promise.resolve(new Uint8Array()),
           ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.width}/${VALUE}`, 4, 4, signal),
           ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.height}/${VALUE}`, 4, 4, signal),
-          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.paletteMin}/${VALUE}`, 8, 8, signal),
-          ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.paletteMax}/${VALUE}`, 8, 8, signal),
+          zip.file(`${basePath}/${KEYS.paletteMin}/${VALUE}`)
+            ? ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.paletteMin}/${VALUE}`, 8, 8, signal)
+            : Promise.resolve(new Uint8Array()),
+          zip.file(`${basePath}/${KEYS.paletteMax}/${VALUE}`)
+            ? ZagArchive.readZipEntry(zip, `${basePath}/${KEYS.paletteMax}/${VALUE}`, 8, 8, signal)
+            : Promise.resolve(new Uint8Array()),
           ZagArchive.readZipEntry(
             zip,
             `${basePath}/${KEYS.calibration}/${VALUE}`,
@@ -162,17 +115,17 @@ export class ZagArchive {
       const width = dataView(widthBytes).getUint32(0, true)
       const height = dataView(heightBytes).getUint32(0, true)
       validateZagDimensions(width, height)
-      const paletteMinMm = dataView(minBytes).getFloat64(0, true) * 1000
-      const paletteMaxMm = dataView(maxBytes).getFloat64(0, true) * 1000
-      validatePaletteRange(paletteMinMm, paletteMaxMm)
+      const paletteMinMm = minBytes.byteLength ? dataView(minBytes).getFloat64(0, true) * 1000 : undefined
+      const paletteMaxMm = maxBytes.byteLength ? dataView(maxBytes).getFloat64(0, true) * 1000 : undefined
+      if (paletteMinMm !== undefined && paletteMaxMm !== undefined) validatePaletteRange(paletteMinMm, paletteMaxMm)
       captures.push({
         id: basePath,
         name: decodeText(nameBytes),
         basePath,
         width,
         height,
-        model: decodeText(modelBytes),
-        serial: decodeText(serialBytes),
+        model: decodeText(modelBytes) || '未记录',
+        serial: decodeText(serialBytes) || '未记录',
         xyPitchMm: extractNumber(calibration, 'MeterPerPixel'),
         zUnitMm: extractNumber(calibration, 'MeterPerUnit'),
         paletteMinMm,
@@ -185,7 +138,7 @@ export class ZagArchive {
   }
 
   private static async readZipEntry(
-    zip: JSZip,
+    zip: FileZipArchive,
     path: string,
     maxBytes: number,
     expectedBytes?: number,
@@ -194,13 +147,12 @@ export class ZagArchive {
     assertNotAborted(signal)
     const entry = zip.file(path)
     if (!entry) throw new Error(`ZAG 采集记录缺少字段 ${path.split('/').at(-2) ?? path}`)
-    const data = loadedZipData(entry)
-    if (!data) throw new Error(`无法验证 ZAG 条目完整性：${entry.name}`)
+    const data = entry.data
     if (data.uncompressedSize > maxBytes) throw new Error(`ZAG 条目超过允许大小：${entry.name}`)
     if (expectedBytes !== undefined && data.uncompressedSize !== expectedBytes) {
       throw new Error(`ZAG 条目尺寸不匹配：${entry.name}`)
     }
-    const bytes = await entry.async('uint8array')
+    const bytes = await entry.read()
     assertNotAborted(signal)
     if (bytes.byteLength !== data.uncompressedSize || bytes.byteLength > maxBytes) {
       throw new Error(`ZAG 条目解压尺寸不匹配：${entry.name}`)

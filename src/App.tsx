@@ -4,12 +4,13 @@ import CrossSection from './components/CrossSection'
 import ExportWorkspace from './components/ExportWorkspace'
 import Inspector from './components/Inspector'
 import ViewerCanvas from './components/ViewerCanvas'
-import { stlFileToModel, zagFieldToModel, zagTextureToRgba } from './lib/models'
+import { disposeViewerModel, stlFileToModel, zagFieldToModel, zagTextureToRgba } from './lib/models'
 import { downloadObj, createViewerModelObj } from './lib/objExportClient'
 import type { ObjScaleMode } from './lib/objExport'
 import { paletteCss } from './lib/palette'
 import { ZagArchive } from './lib/zag'
-import type { ExportCameraSettings, InteractionMode, PointMarker, PointerSample, SurfaceMode, ViewPreset, ViewerModel } from './types'
+import { fullModelRegion } from './lib/region'
+import type { ExportCameraSettings, InteractionMode, ObjDetail, PointMarker, PointerSample, RegionBounds, SurfaceMode, ViewPreset, ViewRequest, ViewerModel } from './types'
 
 function formatNumber(value: number, digits = 3): string {
   return Number.isFinite(value) ? value.toFixed(digits) : '—'
@@ -61,11 +62,14 @@ export default function App() {
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string>()
   const [objScaleMode, setObjScaleMode] = useState<ObjScaleMode>('true')
+  const [objDetail, setObjDetail] = useState<ObjDetail>('high')
+  const [regionEnabled, setRegionEnabled] = useState(false)
+  const [region, setRegion] = useState<RegionBounds>()
   const [objExporting, setObjExporting] = useState(false)
   const [objExportProgress, setObjExportProgress] = useState(0)
   const [objExportMessage, setObjExportMessage] = useState<string>()
   const [objExportError, setObjExportError] = useState<string>()
-  const [viewRequest, setViewRequest] = useState<{ preset: ViewPreset; nonce: number }>({ preset: 'iso', nonce: 0 })
+  const [viewRequest, setViewRequest] = useState<ViewRequest>({ preset: 'iso', nonce: 0 })
   const [viewerCamera, setViewerCamera] = useState<ExportCameraSettings>()
   const [modelResetNonce, setModelResetNonce] = useState(0)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -89,8 +93,10 @@ export default function App() {
     setObjExportProgress(0)
     setObjExportMessage(undefined)
     setObjExportError(undefined)
+    setRegionEnabled(false)
+    setRegion(next.kind === 'zag' ? fullModelRegion(next) : undefined)
     setModel((previous) => {
-      previous?.geometry.dispose()
+      if (previous) disposeViewerModel(previous)
       return next
     })
     setMinHeight(next.suggestedMinMm)
@@ -125,7 +131,7 @@ export default function App() {
   useEffect(() => () => {
     loadAbortRef.current?.abort()
     objExportAbortRef.current?.abort()
-    modelRef.current?.geometry.dispose()
+    if (modelRef.current) disposeViewerModel(modelRef.current)
   }, [])
 
   const ensureTexture = useCallback((target: ViewerModel): Promise<LoadedTexture> => {
@@ -333,10 +339,12 @@ export default function App() {
         scaleZ,
         signal: controller.signal,
         onProgress: setObjExportProgress,
+        region: regionEnabled ? region : undefined,
+        detail: objDetail,
       })
       downloadObj(result)
       setObjExportProgress(1)
-      setObjExportMessage(`已生成并下载 ${result.fileName}（${formatFileSize(result.size)}）`)
+      setObjExportMessage(`已下载 ${result.fileName}（${formatFileSize(result.size)}，${result.vertexCount.toLocaleString()} 点，${result.triangleCount.toLocaleString()} 面${result.sampleStep ? `，采样步长 ${result.sampleStep} px` : ''}）`)
     } catch (cause) {
       if (!isAbortError(cause)) setObjExportError(cause instanceof Error ? cause.message : 'OBJ 导出失败')
     } finally {
@@ -345,7 +353,25 @@ export default function App() {
         setObjExporting(false)
       }
     }
-  }, [model, objExporting, objScaleMode, scaleX, scaleY, scaleZ])
+  }, [model, objDetail, objExporting, objScaleMode, region, regionEnabled, scaleX, scaleY, scaleZ])
+
+  const updateRegion = (next: RegionBounds) => {
+    setRegion(next)
+    setObjExportMessage(undefined)
+    setObjExportError(undefined)
+  }
+
+  const toggleRegion = (enabled: boolean) => {
+    setRegionEnabled(enabled)
+    setObjExportMessage(undefined)
+    setObjExportError(undefined)
+  }
+
+  const focusRegion = () => {
+    if (!region || !regionEnabled) return
+    setModelResetNonce((value) => value + 1)
+    setViewRequest((request) => ({ preset: 'iso', nonce: request.nonce + 1, region, scale: [scaleX, scaleY, scaleZ] }))
+  }
 
   const onDrop = (event: React.DragEvent) => {
     event.preventDefault()
@@ -359,6 +385,12 @@ export default function App() {
   const closeExportPage = () => {
     window.location.hash = ''
   }
+
+  const effectiveSectionIndex = regionEnabled && region && model?.sectionCount
+    ? Math.max(
+      Math.ceil(region.y[0] / model.lengthMm * (model.sectionCount - 1)),
+      Math.min(sectionIndex, Math.floor(region.y[1] / model.lengthMm * (model.sectionCount - 1))),
+    ) : sectionIndex
 
   if (page === 'export') {
     return (
@@ -440,9 +472,10 @@ export default function App() {
               modelResetNonce={modelResetNonce}
               showGrid={showGrid}
               showSection={showProfile && showSectionPlane}
-              sectionIndex={sectionIndex}
+              sectionIndex={effectiveSectionIndex}
               pointMarkingEnabled={pointMarkingEnabled}
               pointMarkers={pointMarkers}
+              region={regionEnabled ? region : undefined}
               viewRequest={viewRequest}
               onPointerSample={setPointer}
               onAddPointMarker={addPointMarker}
@@ -480,6 +513,7 @@ export default function App() {
               </div>
             )}
             {model && <div className="source-chip"><span />{model.kind === 'zag' ? 'ZAG 原始高度场' : 'STL 网格'}</div>}
+            {model && regionEnabled && region && <div className="region-chip">XYZ 选区 · {(region.x[1] - region.x[0]).toFixed(2)} × {(region.y[1] - region.y[0]).toFixed(2)} mm</div>}
             {model && pointMarkingEnabled && (
               <div className="interaction-hint is-measuring">
                 单击模型添加高度标记 · 可连续添加多个点 · 拖动仍按当前交互方式操作
@@ -489,7 +523,8 @@ export default function App() {
           </div>
           <CrossSection
             model={model}
-            sectionIndex={sectionIndex}
+            sectionIndex={effectiveSectionIndex}
+            region={regionEnabled ? region : undefined}
             onSectionIndex={setSectionIndex}
             visible={showProfile}
             showSectionPlane={showSectionPlane}
@@ -536,6 +571,18 @@ export default function App() {
             setObjExportError(undefined)
           }}
           onExportObj={() => void exportObj()}
+          regionEnabled={regionEnabled}
+          region={region}
+          regionDisabled={busy || objExporting}
+          onRegionEnabled={toggleRegion}
+          onRegion={updateRegion}
+          onFocusRegion={focusRegion}
+          objDetail={objDetail}
+          onObjDetail={(value) => {
+            setObjDetail(value)
+            setObjExportMessage(undefined)
+            setObjExportError(undefined)
+          }}
         />
       </div>
 

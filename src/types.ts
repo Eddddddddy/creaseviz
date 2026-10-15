@@ -7,6 +7,22 @@ export type RotationAxis = 'x' | 'y' | 'z'
 export type RotationDirection = 'clockwise' | 'counterclockwise'
 export type ExportQuality = 'standard' | 'high' | 'maximum'
 
+/** Calibrated measurement coordinates in millimeters, before display scaling. */
+export interface RegionBounds {
+  x: [number, number]
+  y: [number, number]
+  z: [number, number]
+}
+
+export type ObjDetail = 'preview' | 'high' | 'original'
+
+export interface ViewRequest {
+  preset: ViewPreset
+  nonce: number
+  region?: RegionBounds
+  scale?: [number, number, number]
+}
+
 export interface ExportCameraSettings {
   azimuthDeg: number
   elevationDeg: number
@@ -26,8 +42,8 @@ export interface CaptureSummary {
   serial: string
   xyPitchMm: number
   zUnitMm: number
-  paletteMinMm: number
-  paletteMaxMm: number
+  paletteMinMm?: number
+  paletteMaxMm?: number
 }
 
 export interface ZagHeightField {
@@ -68,6 +84,7 @@ export interface ViewerModel {
   crossSections: Float32Array[]
   crossSectionX: Float32Array
   capture?: CaptureSummary
+  hasSourceData?: boolean
   warning?: string
 }
 

@@ -6,6 +6,7 @@ private_assets/
 
 *.zag
 *.stl
+*.obj
 *.log
 *.webm
 *.mp4

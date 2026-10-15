@@ -174,6 +174,27 @@ button { color: inherit; }
 .obj-export-status { margin: 8px 0 0; padding: 7px 8px; border: 1px solid; border-radius: 4px; font-size: 9px; line-height: 1.45; word-break: break-word; }
 .obj-export-status.is-success { color: #21623f; background: #e5f6ed; border-color: #aedac1; }
 .obj-export-status.is-error { color: #8a3733; background: #ffebe9; border-color: #e4aaa5; }
+.region-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+.region-heading h2 { margin: 0; }
+.region-heading .profile-plane-toggle { color: #637180; }
+.region-heading .profile-plane-toggle.is-on { color: #2178c5; }
+.region-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.region-fields:disabled { opacity: .45; }
+.region-axis { margin-top: 10px; }
+.region-axis-heading { display: flex; align-items: center; gap: 8px; font-size: 10px; }
+.region-axis-heading strong { color: #277fd3; font-size: 11px; }
+.region-axis-heading span { color: #7c8791; font-size: 9px; }
+.region-values { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 5px; }
+.region-values label { display: flex; align-items: center; gap: 5px; min-width: 0; color: #7a8590; font-size: 9px; }
+.region-values label > span { flex: 0 0 auto; white-space: nowrap; }
+.region-values input { width: 100%; min-width: 0; height: 27px; padding: 0 6px; color: #303a44; background: #fff; border: 1px solid #c5ccd3; border-radius: 4px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.region-sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 3px 0 0 24px; }
+.region-sliders input { width: 100%; margin: 0; accent-color: #2786dd; cursor: ew-resize; }
+.region-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 12px; }
+.region-actions button { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.region-focus { margin-top: 6px; }
+.region-dimensions { margin: 9px 0 0; color: #356f9e; font-size: 9px; font-variant-numeric: tabular-nums; }
+.region-chip { position: absolute; top: 14px; left: 146px; padding: 7px 9px; color: #a8d2f4; background: rgb(25 52 74 / 88%); border: 1px solid #3b6380; border-radius: 5px; font-size: 10px; pointer-events: none; }
 .layer-row { display: grid; grid-template-columns: 20px 1fr auto; align-items: center; width: 100%; padding: 8px 5px; color: #49535e; background: transparent; border: 0; border-bottom: 1px solid #d7dce1; font-size: 11px; text-align: left; cursor: pointer; }
 .layer-row svg { color: #277fd3; }.layer-state { color: #929aa3; font-size: 9px; }.layer-state.is-on { color: #1f85dc; }
 

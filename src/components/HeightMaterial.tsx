@@ -19,6 +19,7 @@ interface HeightMaterialProps {
   textureMix: number
   paletteBrightness: number
   opacity?: number
+  clippingPlanes?: THREE.Plane[]
 }
 
 function createLinearPalette(palette: Uint8Array): Float32Array {
@@ -49,6 +50,7 @@ export default function HeightMaterial({
   textureMix,
   paletteBrightness,
   opacity = 1,
+  clippingPlanes,
 }: HeightMaterialProps) {
   const linearPalette = useMemo(() => createLinearPalette(palette), [palette])
 
@@ -83,6 +85,8 @@ export default function HeightMaterial({
       shadowSide: THREE.DoubleSide,
       transparent: opacity < 1,
       opacity,
+      clippingPlanes,
+      clipShadows: true,
     })
 
     value.onBeforeCompile = (shader) => {
@@ -115,7 +119,7 @@ export default function HeightMaterial({
     }
     value.customProgramCacheKey = () => `height-pbr-v2-${surfaceTexture ? 'texture' : 'plain'}`
     return value
-  }, [opacity, paletteBrightness, surfaceTexture, textureMix])
+  }, [clippingPlanes, opacity, paletteBrightness, surfaceTexture, textureMix])
 
   useEffect(() => {
     const shader = material.userData.compiledShader as CompiledHeightShader | undefined

@@ -2,7 +2,7 @@ import { useEffect, useRef, type ComponentRef, type RefObject } from 'react'
 import { Canvas, type ThreeEvent, useThree } from '@react-three/fiber'
 import { GizmoHelper, GizmoViewport, Grid, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
-import type { ExportCameraSettings, InteractionMode, PointMarker, PointerSample, SurfaceMode, ViewPreset, ViewerModel } from '../types'
+import type { ExportCameraSettings, InteractionMode, PointMarker, PointerSample, RegionBounds, SurfaceMode, ViewPreset, ViewRequest, ViewerModel } from '../types'
 import { SceneLighting, SceneSurface } from './SceneSurface'
 
 type OrbitControlsHandle = ComponentRef<typeof OrbitControls>
@@ -25,7 +25,8 @@ interface ViewerCanvasProps {
   sectionIndex: number
   pointMarkingEnabled: boolean
   pointMarkers: PointMarker[]
-  viewRequest: { preset: ViewPreset; nonce: number }
+  region?: RegionBounds
+  viewRequest: ViewRequest
   onPointerSample: (sample?: PointerSample) => void
   onAddPointMarker: (sample: PointerSample) => void
   onRemovePointMarker: (markerId: number) => void
@@ -35,13 +36,22 @@ interface ViewerCanvasProps {
 
 function CameraRig({ model, request, controlsRef }: {
   model?: ViewerModel
-  request: { preset: ViewPreset; nonce: number }
+  request: ViewRequest
   controlsRef: RefObject<OrbitControlsHandle | null>
 }) {
   const { camera } = useThree()
   useEffect(() => {
     if (!model || !controlsRef.current) return
-    const span = Math.max(model.widthMm, model.lengthMm, 1)
+    const region = request.region
+    const [sx, sy, sz] = request.scale ?? [1, 1, 1]
+    const center = region ? new THREE.Vector3(
+      ((region.x[0] + region.x[1]) / 2 - model.widthMm / 2) * sx,
+      (region.z[0] + region.z[1]) / 2 * sz,
+      ((region.y[0] + region.y[1]) / 2 - model.lengthMm / 2) * sy,
+    ) : new THREE.Vector3()
+    const span = region
+      ? Math.max((region.x[1] - region.x[0]) * sx, (region.y[1] - region.y[0]) * sy, (region.z[1] - region.z[0]) * sz, 1)
+      : Math.max(model.widthMm, model.lengthMm, 1)
     const positions: Record<ViewPreset, [number, number, number]> = {
       top: [0, span * 1.82, 0.001],
       front: [0, span * 0.2, span * 1.9],
@@ -50,10 +60,22 @@ function CameraRig({ model, request, controlsRef }: {
       reset: [span * 1.05, span * 0.62, span * 1.05],
     }
     camera.position.set(...positions[request.preset])
+    if (region && camera instanceof THREE.PerspectiveCamera) {
+      const radius = Math.hypot(
+        (region.x[1] - region.x[0]) * sx,
+        (region.y[1] - region.y[0]) * sy,
+        (region.z[1] - region.z[0]) * sz,
+      ) / 2
+      const verticalFov = THREE.MathUtils.degToRad(camera.fov)
+      const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect)
+      const distance = Math.max(1, radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2)) * 1.15
+      camera.position.normalize().multiplyScalar(distance)
+    }
+    camera.position.add(center)
     camera.near = Math.max(0.001, span / 10_000)
     camera.far = span * 100
     camera.updateProjectionMatrix()
-    controlsRef.current.target.set(0, 0, 0)
+    controlsRef.current.target.copy(center)
     controlsRef.current.update()
   }, [camera, controlsRef, model, request])
   return null
@@ -228,6 +250,7 @@ export default function ViewerCanvas(props: ViewerCanvasProps) {
       onCreated={({ gl }) => {
         gl.setClearColor('#111419')
         gl.shadowMap.enabled = true
+        gl.localClippingEnabled = true
         gl.shadowMap.type = THREE.PCFSoftShadowMap
         gl.toneMapping = THREE.ACESFilmicToneMapping
         gl.toneMappingExposure = 1

@@ -144,6 +144,16 @@ self.onmessage = (event: MessageEvent<BuildMessage | TextureMessage>) => {
   }
 
   finiteValues.sort((a, b) => a - b)
+  let sourceMinimum = Number.POSITIVE_INFINITY
+  let sourceMaximum = Number.NEGATIVE_INFINITY
+  for (let row = 0; row < message.height; row += 1) {
+    for (let column = 0; column < message.width; column += 1) {
+      if (mask[row * message.maskStride + column] === 2) continue
+      const value = heights[row * message.width + column] * message.zUnitMm
+      sourceMinimum = Math.min(sourceMinimum, value)
+      sourceMaximum = Math.max(sourceMaximum, value)
+    }
+  }
   const crossSections: ArrayBuffer[] = []
   const rowFractions = [0.25, 0.5, 0.75]
   for (const fraction of rowFractions) {
@@ -185,11 +195,13 @@ self.onmessage = (event: MessageEvent<BuildMessage | TextureMessage>) => {
     sampledHeight,
     sampleStep: step,
     validPointCount: finiteValues.length,
-    minHeightMm: finiteValues[0] ?? 0,
-    maxHeightMm: finiteValues.at(-1) ?? 0,
+    minHeightMm: Number.isFinite(sourceMinimum) ? sourceMinimum : 0,
+    maxHeightMm: Number.isFinite(sourceMaximum) ? sourceMaximum : 0,
     suggestedMinMm: percentile(finiteValues, 0.01),
     suggestedMaxMm: percentile(finiteValues, 0.99),
     triangleCount: indexCursor / 3,
+    sourceHeights: message.heights,
+    sourceMask: message.mask,
   }
   const transfers: Transferable[] = [
     result.positions,
@@ -198,6 +210,8 @@ self.onmessage = (event: MessageEvent<BuildMessage | TextureMessage>) => {
     result.crossSectionRows,
     result.indices,
     result.crossSectionX,
+    result.sourceHeights,
+    result.sourceMask,
     ...crossSections,
   ]
   if (result.textureRgba) transfers.push(result.textureRgba)

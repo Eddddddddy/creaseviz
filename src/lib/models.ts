@@ -3,8 +3,23 @@ import type { ViewerModel, ZagHeightField } from '../types'
 import { FILE_LIMITS, assertNotAborted, inspectStlHeader, validateZagDimensions } from './fileLimits'
 import { createScientificPalette } from './palette'
 
+type SourceField = Pick<ZagHeightField, 'heights' | 'mask' | 'maskStride'>
+// Keep raw matrices outside React props/state and release them with the model.
+const zagSources = new WeakMap<THREE.BufferGeometry, SourceField>()
+
+export function getZagModelSource(model: ViewerModel): SourceField | undefined {
+  return zagSources.get(model.geometry)
+}
+
+export function disposeViewerModel(model: ViewerModel): void {
+  zagSources.delete(model.geometry)
+  model.geometry.dispose()
+}
+
 interface WorkerResult {
   type: 'zag-mesh-result'
+  sourceHeights: ArrayBuffer
+  sourceMask: ArrayBuffer
   positions: ArrayBuffer
   uvs: ArrayBuffer
   scalars: ArrayBuffer
@@ -104,6 +119,12 @@ export async function zagFieldToModel(
   geometry.computeVertexNormals()
   geometry.computeBoundingSphere()
 
+  zagSources.set(geometry, {
+    heights: new Int32Array(result.sourceHeights),
+    mask: new Uint8Array(result.sourceMask),
+    maskStride: field.maskStride,
+  })
+
   return {
     kind: 'zag',
     fileName,
@@ -132,6 +153,7 @@ export async function zagFieldToModel(
     crossSections: result.crossSections.map((buffer) => new Float32Array(buffer)),
     crossSectionX: new Float32Array(result.crossSectionX),
     capture: field.capture,
+    hasSourceData: true,
   }
 }
 

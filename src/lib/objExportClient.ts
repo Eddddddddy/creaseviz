@@ -1,4 +1,6 @@
-import type { ViewerModel } from '../types'
+import type { ObjDetail, RegionBounds, ViewerModel } from '../types'
+import { clipMeshToRegion } from './region'
+import { getZagModelSource } from './models'
 import { OBJ_LIMITS, safeObjFileName, type ObjMeshSummary, type ObjScaleMode } from './objExport'
 
 export interface ObjExportOptions {
@@ -8,6 +10,8 @@ export interface ObjExportOptions {
   scaleZ: number
   signal?: AbortSignal
   onProgress?: (progress: number) => void
+  region?: RegionBounds
+  detail?: ObjDetail
 }
 
 export interface ObjExportResult extends ObjMeshSummary {
@@ -50,12 +54,31 @@ export function createViewerModelObj(
   if (!position || position.itemSize < 3) return Promise.reject(new Error('当前 ZAG 没有可导出的三维网格'))
   const uv = model.geometry.getAttribute('uv')
   if (uv && uv.count !== position.count) return Promise.reject(new Error('当前 ZAG 的 UV 数据不完整'))
-  const positions = copyAttribute(position)
-  const uvs = copyUvs(uv)
+  let positions = copyAttribute(position)
+  let uvs = copyUvs(uv)
   const geometryIndex = model.geometry.getIndex()
-  const indices = geometryIndex
+  let indices = geometryIndex
     ? Uint32Array.from({ length: geometryIndex.count }, (_, index) => geometryIndex.getX(index))
     : undefined
+  const sourceField = getZagModelSource(model)
+  const source = sourceField && model.capture ? {
+    heights: sourceField.heights.slice().buffer,
+    mask: sourceField.mask.slice().buffer,
+    maskStride: sourceField.maskStride,
+    capture: model.capture,
+    bounds: options.region ?? {
+      x: [0, model.widthMm] as [number, number],
+      y: [0, model.lengthMm] as [number, number],
+      z: [model.minHeightMm - 0.000001, model.maxHeightMm + 0.000001] as [number, number],
+    },
+    detail: options.detail ?? 'high',
+  } : undefined
+  if (!source && options.region && indices) {
+    const clipped = clipMeshToRegion({ positions, indices, uvs }, options.region)
+    positions = clipped.positions
+    indices = clipped.indices.slice()
+    uvs = clipped.uvs
+  }
   const scaleX = options.scaleMode === 'true' ? 1 : options.scaleX
   const scaleY = options.scaleMode === 'true' ? 1 : options.scaleY
   const scaleZ = options.scaleMode === 'true' ? 1 : options.scaleZ
@@ -80,11 +103,16 @@ export function createViewerModelObj(
     worker.onerror = (event) => finish(() => reject(new Error(event.message || 'OBJ Worker 生成失败')))
     worker.onmessageerror = () => finish(() => reject(new Error('OBJ Worker 返回了无效数据')))
     worker.onmessage = (event: MessageEvent<{
-      type: 'obj-progress' | 'obj-result'
+      type: 'obj-progress' | 'obj-result' | 'obj-error'
+      error?: string
       progress?: number
       blob?: Blob
       summary?: ObjMeshSummary
     }>) => {
+      if (event.data.type === 'obj-error') {
+        finish(() => reject(new Error(event.data.error || 'OBJ 生成失败')))
+        return
+      }
       if (event.data.type === 'obj-progress') {
         options.onProgress?.(event.data.progress ?? 0)
         return
@@ -97,13 +125,14 @@ export function createViewerModelObj(
       finish(() => resolve({
         ...summary,
         blob,
-        fileName: safeObjFileName(model.label || model.fileName, options.scaleMode),
+        fileName: safeObjFileName(`${model.fileName.replace(/\.zag$/i, '')}-${model.label}${options.region ? '-region' : ''}`, options.scaleMode),
       }))
     }
 
     const transfers: Transferable[] = [positions.buffer]
     if (indices) transfers.push(indices.buffer)
     if (uvs) transfers.push(uvs.buffer)
+    if (source) transfers.push(source.heights, source.mask)
     worker.postMessage({
       type: 'export-obj',
       name: model.label || model.fileName,
@@ -114,6 +143,8 @@ export function createViewerModelObj(
       scaleY,
       scaleZ,
       scaleMode: options.scaleMode,
+      region: options.region,
+      source,
     }, transfers)
   })
 }
