@@ -14,6 +14,7 @@ import { fullModelRegion } from './lib/region'
 import { DEFAULT_SPIKE_OPTIONS, type SpikeRemovalOptions, type SpikeRemovalStats } from './lib/spikeRemoval'
 import { repairZagSpikes } from './lib/spikeRemovalClient'
 import { DEFAULT_ASSESSMENT_OPTIONS, type AssessmentSession } from './lib/assessmentTypes'
+import { createEqualAreaRegion, DEFAULT_EQUAL_AREA_SIZE } from './lib/assessmentRegion'
 import type { ExportCameraSettings, InteractionMode, ObjDetail, PointMarker, PointerSample, RegionBounds, SurfaceMode, ViewPreset, ViewRequest, ViewerModel } from './types'
 
 const AssessmentWorkspace = lazy(() => import('./components/AssessmentWorkspace'))
@@ -86,6 +87,7 @@ export default function App() {
   const [objDetail, setObjDetail] = useState<ObjDetail>('high')
   const [regionEnabled, setRegionEnabled] = useState(false)
   const [region, setRegion] = useState<RegionBounds>()
+  const [equalAreaError, setEqualAreaError] = useState<string>()
   const [autoRangeComputing, setAutoRangeComputing] = useState(false)
   const [autoRangeError, setAutoRangeError] = useState<string>()
   const [spikeOptions, setSpikeOptions] = useState<SpikeRemovalOptions>(DEFAULT_SPIKE_OPTIONS)
@@ -123,6 +125,7 @@ export default function App() {
   ), [])
 
   const applyModel = useCallback((next: ViewerModel) => {
+    setEqualAreaError(undefined)
     spikeAbortRef.current?.abort()
     spikeAbortRef.current = undefined
     setSpikeProcessing(false)
@@ -517,6 +520,7 @@ export default function App() {
   }
 
   const updateRegion = (next: RegionBounds) => {
+    setEqualAreaError(undefined)
     cancelAutoRange()
     setRegion(next)
     setObjExportMessage(undefined)
@@ -524,16 +528,34 @@ export default function App() {
   }
 
   const toggleRegion = (enabled: boolean) => {
+    setEqualAreaError(undefined)
     cancelAutoRange()
     setRegionEnabled(enabled)
     setObjExportMessage(undefined)
     setObjExportError(undefined)
   }
 
-  const focusRegion = () => {
-    if (!region || !regionEnabled) return
+  const focusRegionBounds = (bounds: RegionBounds) => {
     setModelResetNonce((value) => value + 1)
-    setViewRequest((request) => ({ preset: 'iso', nonce: request.nonce + 1, region, scale: [scaleX, scaleY, scaleZ] }))
+    setViewRequest((request) => ({ preset: 'iso', nonce: request.nonce + 1, region: bounds, scale: [scaleX, scaleY, scaleZ] }))
+  }
+
+  const focusRegion = () => {
+    if (region && regionEnabled) focusRegionBounds(region)
+  }
+
+  const selectAssessmentRegion = () => {
+    if (busy || objExporting || spikeProcessing) return
+    const source = getAssessmentSourceModel(assessmentSession.source)
+    if (!source?.capture || !getZagModelSource(source)) { setEqualAreaError('请先打开具有完整标定信息的 ZAG'); return }
+    try {
+      const bounds = createEqualAreaRegion(source, assessmentSession.equalArea ?? DEFAULT_EQUAL_AREA_SIZE,
+        assessmentSession.options.hingeAxis, assessmentSession.options.hingeCenterMm)
+      updateRegion(bounds); toggleRegion(true)
+      setAssessmentSession((s) => ({ ...s, scope: 'selection', options: { ...s.options, edgeMarginMm: 0 } }))
+      // Focus the newly computed bounds, not the previous selection from React state.
+      focusRegionBounds(bounds)
+    } catch (cause) { setEqualAreaError(cause instanceof Error ? cause.message : '自动取区失败') }
   }
 
   const onDrop = (event: React.DragEvent) => {
@@ -770,6 +792,10 @@ export default function App() {
           onRegionEnabled={toggleRegion}
           onRegion={updateRegion}
           onFocusRegion={focusRegion}
+          equalAreaRegion={{ size: assessmentSession.equalArea ?? DEFAULT_EQUAL_AREA_SIZE,
+            hingeAxis: assessmentSession.options.hingeAxis,
+            sourceLabel: assessmentSession.source === 'original' ? '原始 ZAG' : model?.spikeRepair ? '修复后高度' : '原始高度',
+            error: equalAreaError, onSelect: selectAssessmentRegion }}
           objDetail={objDetail}
           onObjDetail={(value) => {
             setObjDetail(value)

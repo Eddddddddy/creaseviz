@@ -1,7 +1,7 @@
 import { Eye, EyeOff, Image as ImageIcon, Layers3, Ratio, ScanLine, SlidersHorizontal } from 'lucide-react'
 import type { ObjScaleMode } from '../lib/objExport'
 import type { CaptureSummary, ObjDetail, RegionBounds, SurfaceMode, ViewerModel } from '../types'
-import RegionSelection from './RegionSelection'
+import RegionSelection, { type EqualAreaRegionAction } from './RegionSelection'
 import ObjExportPanel from './ObjExportPanel'
 import SpikeRemovalPanel, { type SpikeRemovalPanelProps } from './SpikeRemovalPanel'
 import AdvancedSettings from './AdvancedSettings'
@@ -50,6 +50,7 @@ interface InspectorProps extends SpikeRemovalPanelProps {
   onRegionEnabled: (value: boolean) => void
   onRegion: (value: RegionBounds) => void
   onFocusRegion: () => void
+  equalAreaRegion?: EqualAreaRegionAction
   objDetail: ObjDetail
   onObjDetail: (value: ObjDetail) => void
 }
@@ -145,7 +146,7 @@ export default function Inspector(props: InspectorProps) {
       {props.model?.kind === 'zag' && props.region && (
         <RegionSelection model={props.model} enabled={props.regionEnabled} bounds={props.region}
           disabled={props.regionDisabled} onEnabled={props.onRegionEnabled} onBounds={props.onRegion}
-          onFocus={props.onFocusRegion} />
+          onFocus={props.onFocusRegion} equalAreaAction={props.equalAreaRegion} />
       )}
 
       <ObjExportPanel {...props} />

@@ -10,8 +10,9 @@ import type { ViewerModel } from '../types'
 
 const noop = () => {}
 
-function detailsContent(html: string): string {
-  const match = html.match(/<details\b[^>]*>([\s\S]*?)<\/details>/)
+function detailsContent(html: string, label?: string): string {
+  const remaining = label ? html.slice(html.indexOf(`aria-label="${label}"`)) : html
+  const match = label ? remaining.match(/^[\s\S]*?<\/summary>([\s\S]*?)<\/details>/) : remaining.match(/<details\b[^>]*>([\s\S]*?)<\/details>/)
   expect(match).not.toBeNull()
   return match![1]
 }
@@ -91,7 +92,7 @@ describe('progressive disclosure and usable defaults', () => {
     const html = renderAssessment()
     expectCollapsed(html)
     expect(html).toContain('推荐参数 · 可直接评估')
-    const advanced = detailsContent(html)
+    const advanced = detailsContent(html, '屏幕评估高级设置')
     for (const label of ['目标分析间距', '形貌滤波尺度', '肩部内缘距离', '沿轴分带宽度', '坡角超限阈值']) {
       expect(advanced).toContain(`aria-label="${label}"`)
     }

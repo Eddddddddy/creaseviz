@@ -2,6 +2,15 @@ import { Crop, RotateCcw } from 'lucide-react'
 import type { RegionBounds, ViewerModel } from '../types'
 import { fullModelRegion } from '../lib/region'
 import AdvancedSettings from './AdvancedSettings'
+import type { EqualAreaSize } from '../lib/assessmentRegion'
+
+export interface EqualAreaRegionAction {
+  size: EqualAreaSize
+  hingeAxis: 'x' | 'y'
+  sourceLabel: string
+  error?: string
+  onSelect: () => void
+}
 
 interface Props {
   model: ViewerModel
@@ -11,9 +20,10 @@ interface Props {
   onEnabled: (value: boolean) => void
   onBounds: (value: RegionBounds) => void
   onFocus: () => void
+  equalAreaAction?: EqualAreaRegionAction
 }
 
-export default function RegionSelection({ model, enabled, bounds, disabled, onEnabled, onBounds, onFocus }: Props) {
+export default function RegionSelection({ model, enabled, bounds, disabled, onEnabled, onBounds, onFocus, equalAreaAction }: Props) {
   const full = fullModelRegion(model)
   const update = (axis: keyof RegionBounds, side: 0 | 1, value: number) => {
     if (!Number.isFinite(value)) return
@@ -39,7 +49,13 @@ export default function RegionSelection({ model, enabled, bounds, disabled, onEn
           <span className="profile-plane-toggle-track"><i /></span>{enabled ? '已启用' : '未启用'}
         </button>
       </div>
-      <p className="obj-export-note">按真实毫米裁剪。X/Y 为屏幕平面，Z 为高度。</p>
+      <p className="obj-export-note">X/Y 选屏幕范围，Z 选高度。单位：mm。</p>
+      {equalAreaAction && <div className="region-equal-area">
+        <button className="secondary-button" disabled={disabled || !model.hasSourceData} onClick={equalAreaAction.onSelect}>选取同面积评估区域</button>
+        <p className="obj-export-note">{equalAreaAction.size.alongMm} × {equalAreaAction.size.acrossMm} mm（沿轴 × 跨轴）· 转轴沿 {equalAreaAction.hingeAxis.toUpperCase()}<br />
+          与评估页相同 · {equalAreaAction.sourceLabel} · 自动聚焦</p>
+        {equalAreaAction.error && <p className="obj-export-status is-error" role="alert">{equalAreaAction.error}</p>}
+      </div>}
       <fieldset hidden={!enabled} disabled={!enabled || disabled} className="region-fields">
         <AdvancedSettings label="XYZ 选区高级设置" hint="精确调整范围">
         {(['x', 'y', 'z'] as const).map((axis) => (

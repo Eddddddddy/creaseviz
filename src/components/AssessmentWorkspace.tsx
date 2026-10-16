@@ -9,6 +9,8 @@ import type { CaptureSummary, RegionBounds, ViewerModel } from '../types'
 import RegionSelection from './RegionSelection'
 import { AssessmentHeatmap, AssessmentLineChart } from './AssessmentCharts'
 import AdvancedSettings from './AdvancedSettings'
+import AssessmentResultDetails from './AssessmentResultDetails'
+import { assessmentSignature, createEqualAreaRegion, DEFAULT_EQUAL_AREA_SIZE } from '../lib/assessmentRegion'
 
 interface Props {
   model?: ViewerModel
@@ -62,55 +64,74 @@ export default function AssessmentWorkspace(props: Props) {
   const { session, onSession, model, region } = props, o = session.options
   const [computing, setComputing] = useState(false), [progress, setProgress] = useState(0), [error, setError] = useState<string>()
   const [mapMode, setMapMode] = useState<'height' | 'cross' | 'normal'>('height')
-  const abortRef = useRef<AbortController | undefined>(undefined)
+  const abortRef = useRef<{ controller: AbortController; signature: string } | undefined>(undefined)
+  const equalAreaSize = session.equalArea ?? DEFAULT_EQUAL_AREA_SIZE
   const scopeRegion = session.scope === 'selection' && props.regionEnabled && region ? region : model ? fullModelRegion(model) : undefined
-  const signature = JSON.stringify({ version: model?.geometry.uuid, bounds: scopeRegion, options: o, source: session.source })
+  const signature = assessmentSignature(model?.geometry.uuid, scopeRegion, o, session.source)
   const record = session.result, r = record?.result, fresh = record?.signature === signature
   const disabled = computing || props.busy
   const supported = model?.kind === 'zag' && model.hasSourceData
   const recommended = (Object.keys(DEFAULT_ASSESSMENT_OPTIONS) as (keyof AssessmentOptions)[])
     .every((key) => key === 'hingeAxis' || o[key] === DEFAULT_ASSESSMENT_OPTIONS[key])
-  useEffect(() => () => { abortRef.current?.abort() }, [])
+  useEffect(() => () => { abortRef.current?.controller.abort() }, [])
   useEffect(() => {
-    abortRef.current?.abort(); abortRef.current = undefined; setComputing(false)
-  }, [signature])
+    // An auto-crop click updates the selection and starts the matching job atomically.
+    // Only unrelated later changes cancel it; never cancel our own newly selected ROI.
+    if (abortRef.current && (abortRef.current.signature !== signature || props.busy)) {
+      abortRef.current.controller.abort(); abortRef.current = undefined; setComputing(false)
+    }
+  }, [signature, props.busy])
   const option = <K extends keyof AssessmentOptions>(key: K, value: AssessmentOptions[K]) => onSession((s) => ({ ...s, options: { ...s.options, [key]: value } }))
-  const cancel = () => { abortRef.current?.abort(); abortRef.current = undefined; setComputing(false) }
+  const cancel = () => { abortRef.current?.controller.abort(); abortRef.current = undefined; setComputing(false) }
 
-  const analyze = async () => {
-    if (disabled || !scopeRegion) return
+  const runAssessment = async (bounds: RegionBounds, options: AssessmentOptions, scope: string, runSignature: string) => {
+    if (disabled || abortRef.current) return
     const sourceModel = props.getSourceModel(session.source)
     const source = sourceModel && getZagModelSource(sourceModel)
     if (!source || !sourceModel?.capture) { setError('请先打开具有完整标定信息的 ZAG；STL 暂不用于计量评估。'); return }
-    const controller = new AbortController(); abortRef.current = controller
+    const controller = new AbortController(); abortRef.current = { controller, signature: runSignature }
     setComputing(true); setProgress(0); setError(undefined)
-    // Full original-data analysis must not inherit a repaired model's narrower Z extrema.
-    const bounds = assessmentSourceBounds(sourceModel, session.scope === 'selection' && props.regionEnabled ? scopeRegion : undefined)
     try {
-      const result = await calculateAssessment({ ...source, capture: sourceModel.capture }, bounds, { ...o }, controller.signal, setProgress)
-      if (abortRef.current !== controller) return
+      const result = await calculateAssessment({ ...source, capture: sourceModel.capture }, bounds, { ...options }, controller.signal, setProgress)
+      if (abortRef.current?.controller !== controller) return
       const next: AssessmentRecord = {
-        id: crypto.randomUUID(), signature, fileName: sourceModel.fileName, captureName: sourceModel.label,
+        id: crypto.randomUUID(), signature: runSignature, fileName: sourceModel.fileName, captureName: sourceModel.label,
         captureId: sourceModel.capture.id, sourceKind: sourceModel.spikeRepair ? 'repaired' : 'original',
         repairNote: sourceModel.spikeRepair ? `去尖刺：阈值 ${sourceModel.spikeRepair.options.thresholdUm} µm，半径 ${sourceModel.spikeRepair.stats.effectiveRadiusMm.toFixed(6)} mm，方向 ${sourceModel.spikeRepair.options.direction}` : undefined,
-        createdAt: new Date().toISOString(), scope: session.scope === 'selection' && props.regionEnabled ? 'XYZ 选区' : '完整采集记录', result,
+        createdAt: new Date().toISOString(), scope, result,
       }
       onSession((s) => ({ ...s, result: next }))
     } catch (cause) {
-      if (abortRef.current === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : '评估失败')
+      if (abortRef.current?.controller === controller && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : '评估失败')
     } finally {
-      if (abortRef.current === controller) { abortRef.current = undefined; setComputing(false) }
+      if (abortRef.current?.controller === controller) { abortRef.current = undefined; setComputing(false) }
     }
   }
 
-  const preset = (length: number, width: number) => {
-    if (!model) return
-    const sx = o.hingeAxis === 'x' ? length : width, sy = o.hingeAxis === 'x' ? width : length
-    if (model.widthMm < sx || model.lengthMm < sy) { setError('当前扫描尺寸不足，不能生成完整共同区域。请更换记录或手动选择较小区域。'); return }
-    props.onRegion({ x: [(model.widthMm - sx) / 2, (model.widthMm + sx) / 2], y: [(model.lengthMm - sy) / 2, (model.lengthMm + sy) / 2],
-      z: region?.z ?? fullModelRegion(model).z })
-    props.onRegionEnabled(true); onSession((s) => ({ ...s, scope: 'selection', options: { ...s.options, hingeCenterMm: null, edgeMarginMm: 0 } })); setError(undefined)
+  const analyze = () => {
+    const sourceModel = props.getSourceModel(session.source)
+    if (!sourceModel || !scopeRegion) return
+    const selected = session.scope === 'selection' && props.regionEnabled
+    // Full original-data analysis must not inherit repaired-data extrema.
+    return runAssessment(assessmentSourceBounds(sourceModel, selected ? scopeRegion : undefined), { ...o },
+      selected ? 'XYZ 选区' : '完整采集记录', signature)
   }
+
+  const autoRegionAndAnalyze = () => {
+    if (disabled || abortRef.current) return
+    const sourceModel = props.getSourceModel(session.source)
+    if (!sourceModel?.capture || !getZagModelSource(sourceModel)) { setError('请先打开具有完整标定信息的 ZAG'); return }
+    try {
+      const bounds = createEqualAreaRegion(sourceModel, equalAreaSize, o.hingeAxis, o.hingeCenterMm)
+      const options = { ...o, edgeMarginMm: 0 }
+      const nextSignature = assessmentSignature(model?.geometry.uuid, bounds, options, session.source)
+      props.onRegion(bounds); props.onRegionEnabled(true)
+      onSession((s) => ({ ...s, scope: 'selection', options }))
+      // Pass the new bounds explicitly. React state updates are not immediately readable.
+      void runAssessment(bounds, options, 'XYZ 选区', nextSignature)
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '自动取区失败') }
+  }
+
   const keepResult = () => {
     if (!record || !fresh) return
     onSession((s) => ({ ...s, comparisons: [...s.comparisons.filter((v) => v.id !== record.id), record].slice(-8) }))
@@ -119,10 +140,10 @@ export default function AssessmentWorkspace(props: Props) {
   return <>
     <header className="assessment-header">
       <button className="toolbar-button" onClick={props.onBack}><ArrowLeft size={16} />三维查看</button>
-      <div className="assessment-heading"><ChartNoAxesCombined size={21} /><div><strong>屏幕评估</strong><span>真实尺度 · 面平整度 / 中央折痕 / 坡度坡角</span></div></div>
+      <div className="assessment-heading"><ChartNoAxesCombined size={21} /><div><strong>屏幕评估</strong><span>按真实尺寸计算平整度与折痕</span></div></div>
       <div className="toolbar-spacer" /><button className="toolbar-button" onClick={props.onOpenFile}><FolderOpen size={16} />打开文件</button>
-      <button className="toolbar-button" disabled={!record || !fresh} onClick={() => record && downloadAssessment([record], 'json')}><Download size={16} />结果 JSON</button>
-      <button className="toolbar-button" disabled={!record || !fresh} onClick={() => record && downloadAssessment([record], 'csv')}><Download size={16} />指标 CSV</button>
+      <button className="toolbar-button" disabled={!record || !fresh || disabled} onClick={() => record && downloadAssessment([record], 'json')}><Download size={16} />结果 JSON</button>
+      <button className="toolbar-button" disabled={!record || !fresh || disabled} onClick={() => record && downloadAssessment([record], 'csv')}><Download size={16} />指标 CSV</button>
     </header>
     <div className="assessment-layout">
       <aside className="assessment-settings" aria-label="屏幕评估设置">
@@ -137,9 +158,24 @@ export default function AssessmentWorkspace(props: Props) {
           <label className="assessment-select"><span>评估范围</span><select aria-label="评估范围" value={session.scope} disabled={disabled} onChange={(event) => onSession((s) => ({ ...s, scope: event.target.value as AssessmentSession['scope'] }))}>
             <option value="selection">当前 XYZ 选区{props.regionEnabled ? '' : '（未开启，使用完整记录）'}</option><option value="full">完整采集记录（忽略选区）</option>
           </select></label>
-          <p className="assessment-note">按真实尺寸计算，显示倍率不影响结果。</p>
-          <div className="assessment-preset-buttons"><button disabled={disabled || !supported} onClick={() => preset(80, 30)}>共同区域 80×30</button><button disabled={disabled || !supported} onClick={() => preset(80, 12)}>中央区域 80×12</button></div>
-          <p className="assessment-note">快捷选区按扫描中心居中，保留 Z 范围；跨机型仍需人工对齐。</p>
+          <p className="assessment-note">显示放大不影响测量结果。</p>
+        </section>
+        <section className="inspector-section automatic-assessment"><h2>同面积自动取区</h2>
+          <div className="automatic-area-size"><strong>{equalAreaSize.alongMm} × {equalAreaSize.acrossMm}<small> mm</small></strong><span>{number(equalAreaSize.alongMm * equalAreaSize.acrossMm)} mm²</span></div>
+          <p className="assessment-note">沿轴 × 跨轴。默认居中，不挑最平处；放不下会提示。</p>
+          <button className="obj-download-button" disabled={!supported || disabled} aria-busy={computing} onClick={autoRegionAndAnalyze}>{computing ? '正在评估…' : '自动取同面积区域并评估'}</button>
+          <AdvancedSettings label="自动取区高级设置" hint="区域尺寸">
+            <Numeric label="沿转轴长度" value={equalAreaSize.alongMm} min={1} max={1000} step={1} disabled={disabled}
+              onChange={(v) => onSession((s) => ({ ...s, equalArea: { ...(s.equalArea ?? DEFAULT_EQUAL_AREA_SIZE), alongMm: v } }))} />
+            <Numeric label="跨转轴宽度" value={equalAreaSize.acrossMm} min={1} max={1000} step={1} disabled={disabled}
+              onChange={(v) => onSession((s) => ({ ...s, equalArea: { ...(s.equalArea ?? DEFAULT_EQUAL_AREA_SIZE), acrossMm: v } }))} />
+            <div className="assessment-preset-buttons">
+              <button disabled={disabled} onClick={() => onSession((s) => ({ ...s, equalArea: { ...DEFAULT_EQUAL_AREA_SIZE } }))}>80×30 mm（默认）</button>
+              <button disabled={disabled} onClick={() => onSession((s) => ({ ...s, equalArea: { alongMm: 80, acrossMm: 12 } }))}>80×12 mm（中央）</button>
+            </div>
+            <p className="assessment-note">替换当前选区，保留完整高度，内缩边距归零。其他参数和原始文件不变。</p>
+            <p className="assessment-note">默认取扫描中心；设置转轴位置后按转轴取区。不同机型仍需手动对齐。跨轴仅 12 mm 时，两侧参考区可能不足，无法计算折痕。</p>
+          </AdvancedSettings>
         </section>
         {model?.kind === 'zag' && region && <RegionSelection model={model} enabled={props.regionEnabled} bounds={region} disabled={disabled}
           onEnabled={props.onRegionEnabled} onBounds={props.onRegion} onFocus={() => { props.onFocusRegion(); props.onBack() }} />}
@@ -147,8 +183,8 @@ export default function AssessmentWorkspace(props: Props) {
           <label className="assessment-select"><span>转轴沿扫描</span><select aria-label="转轴方向" value={o.hingeAxis} disabled={disabled} onChange={(event) => onSession((s) => ({ ...s, options: { ...s.options, hingeAxis: event.target.value as 'x' | 'y', hingeCenterMm: null } }))}>
             <option value="x">X 方向（跨轴为 Y）</option><option value="y">Y 方向（跨轴为 X）</option>
           </select></label>
-          <p className="assessment-note">默认参考区域中线，转轴方向与位置需人工确认。</p>
-          <div className="settings-default-summary"><strong>{recommended ? '推荐参数 · 可直接评估' : '自定义参数 · 收起后仍生效'}</strong><span>{recommended ? '自动去倾斜、轻度形貌滤波，兼顾整体与中央折痕。' : '当前计算使用高级设置中的参数，可一键恢复推荐值。'}</span></div>
+          <p className="assessment-note">请确认转轴方向，位置默认在区域中线。</p>
+          <div className="settings-default-summary"><strong>{recommended ? '推荐参数 · 可直接评估' : '自定义参数 · 收起后仍生效'}</strong><span>{recommended ? '自动去除摆放倾斜，并轻度滤波。' : '正在使用自定义参数，可恢复推荐值。'}</span></div>
           <AdvancedSettings label="屏幕评估高级设置" hint={recommended ? '推荐参数' : '已自定义'}>
           <h3 className="settings-subheading">分析尺度与参考平面</h3>
           <Numeric label="目标分析间距" value={o.stepMm} min={.02} max={2} onChange={(v) => option('stepMm', v)} disabled={disabled} />
@@ -182,25 +218,27 @@ export default function AssessmentWorkspace(props: Props) {
         </div>
       </aside>
       <section className="assessment-results" aria-label="屏幕评估结果" aria-busy={computing || props.busy}>
-        <div className="assessment-title-row"><div><h1>{record ? record.captureName : '用数据评估屏幕平不平'}</h1><p>{record ? `${record.fileName} · ${record.scope} · ${record.sourceKind === 'repaired' ? '去尖刺后数据' : '原始数据'} · ${new Date(record.createdAt).toLocaleString()}` : '从左侧选择范围和方法，再开始评估。建议优先确认转轴方向、中央位置及两侧肩部。'}</p></div>
+        <div className="assessment-title-row"><div><h1>{record ? record.captureName : '看看屏幕平不平'}</h1><p>{record ? `${record.fileName} · ${record.scope} · ${record.sourceKind === 'repaired' ? '去尖刺后数据' : '原始数据'} · ${new Date(record.createdAt).toLocaleString()}` : '打开 ZAG，确认转轴方向，即可开始。'}</p></div>
           <button className="secondary-button" disabled={!record || !fresh || disabled} onClick={keepResult}><Plus size={15} />加入本次会话对比</button>
         </div>
         {(error || props.loadError) && <p className="assessment-error" role="alert">{error ?? props.loadError}</p>}
-        {props.busy && <p className="assessment-notice" role="status">正在加载新的采集记录，旧结果仅保留作参考。</p>}
-        {computing && <div className="assessment-progress" role="status">后台计算中 {Math.round(progress * 100)}% · 可取消，不会修改原始矩阵<div className="progress-track"><i style={{ width: `${progress * 100}%` }} /></div></div>}
-        {record && !fresh && <p className="assessment-stale" role="status">结果已过期：数据、选区或参数发生变化。下方仍显示上一次结果，请点击“重新评估”；已禁用旧结果导出。</p>}
-        {!supported && <p className="assessment-notice">请打开 ZAG 原始工程。STL 不具备可靠单位和原始有效点掩码，暂不用于这些计量指标。</p>}
-        {!r && <div className="assessment-intro"><h2>三个角度，回答不同的问题</h2><ol><li><strong>整个区域是否平整？</strong>去除摆放倾斜，查看 RMS、F98、峰谷值和整体翘曲。</li><li><strong>中央折痕是否明显？</strong>以两侧肩部为参考，查看深度、隆起、半高宽和沿转轴的差异。</li><li><strong>局部是否陡峭？</strong>查看跨轴／沿轴坡角及表面法向变化，不让单个尖刺主导结论。</li></ol><p>没有预设机型排名或“合格分数”。区域、参考面、滤波尺度和采集状态一致，比较才有意义。</p></div>}
+        <button className="obj-download-button assessment-mobile-auto" disabled={!supported || disabled} onClick={autoRegionAndAnalyze}>一键同面积评估 · {equalAreaSize.alongMm}×{equalAreaSize.acrossMm} mm</button>
+        {props.busy && <p className="assessment-notice" role="status">正在加载，当前显示的是旧结果。</p>}
+        {computing && <div className="assessment-progress" role="status">计算中 {Math.round(progress * 100)}% · 可取消，原始数据不变<div className="progress-track"><i style={{ width: `${progress * 100}%` }} /></div></div>}
+        {record && !fresh && <p className="assessment-stale" role="status">数据、选区或参数已变。下方是旧结果，请重新评估后再导出。</p>}
+        {!supported && <p className="assessment-notice">请打开 ZAG。STL 缺少可靠标定信息，暂不支持评估。</p>}
+        {!r && <div className="assessment-intro"><h2>取同面积区域，比较更方便</h2><p>点击“自动取同面积区域并评估”，即可取区并计算。默认看四项结果，详情按需展开。</p><p>也可评估手动选区或完整屏幕。只提供测量值，不作合格判定。</p></div>}
         {r && record && <>
           <div className="assessment-hero-metrics">
-            <div><span>整体 RMS</span><strong>{number(r.surface.rmsUm)}<small>µm</small></strong><p>越小，偏离参考平面越少</p></div>
-            <div><span>稳健峰谷 F98</span><strong>{number(r.surface.f98Um)}<small>µm</small></strong><p>P99 − P1，不删除极值数据</p></div>
-            <div><span>中央跨轴坡角 P95</span><strong>{number(r.centralSlopes?.cross.p95Deg, 3)}<small>°</small></strong><p>相对参考平面的切线角差</p></div>
-            <div><span>折痕深度 / 隆起 · 分带中位数</span><strong>{number(r.crease.summary?.depthUm.p50)} / {number(r.crease.summary?.bulgeUm.p50)}<small>µm</small></strong><p>相对双侧肩部，不是全屏高差</p></div>
+            <div><span>整体平整度 RMS</span><strong>{number(r.surface.rmsUm)}<small>µm</small></strong><p>同一计算条件下，越小越平</p></div>
+            <div><span>主要高低差 F98</span><strong>{number(r.surface.f98Um)}<small>µm</small></strong><p>去掉最高、最低各 1% 后的高低差</p></div>
+            <div><span>中央折痕起伏</span><strong>{number(r.crease.summary?.amplitudeUm.p50)}<small>µm</small></strong><p>折痕凹下或凸起的典型高度</p></div>
+            <div><span>中央坡角 P95</span><strong>{number(r.centralSlopes?.cross.p95Deg, 3)}<small>°</small></strong><p>横跨折痕，95% 的位置不超过此角度</p></div>
           </div>
-          <div className="assessment-provenance"><span>X {number(r.bounds.x[0], 3)}–{number(r.bounds.x[1], 3)} mm</span><span>Y {number(r.bounds.y[0], 3)}–{number(r.bounds.y[1], 3)} mm</span><span>Z {number(r.bounds.z[0], 4)}–{number(r.bounds.z[1], 4)} mm</span><span>实际间距 {number(r.grid.dxMm, 4)} × {number(r.grid.dyMm, 4)} mm</span><span>覆盖 {number(r.grid.coveragePct)}% · 有效 {number(r.grid.eligibleAreaMm2)} mm²</span><span>{r.grid.nx} × {r.grid.ny} 格 · σ {r.options.sigmaMm} mm</span></div>
+          <div className="assessment-compact-scope"><span>{record.scope} · {number(r.bounds.x[1] - r.bounds.x[0])} × {number(r.bounds.y[1] - r.bounds.y[0])} mm</span><span>选区面积 {number((r.bounds.x[1] - r.bounds.x[0]) * (r.bounds.y[1] - r.bounds.y[0]))} mm²</span><span>有效覆盖 {number(r.grid.coveragePct)}%</span></div>
           {r.warnings.map((warning) => <p className="assessment-warning" key={warning}>{warning}</p>)}
-          {record.repairNote && <p className="assessment-warning">{record.repairNote}；修复点为估计值，建议保留一份原始数据结果作对照。</p>}
+          {record.repairNote && <p className="assessment-warning">{record.repairNote}。修复点是估算值，请与原始数据对照。</p>}
+          <AssessmentResultDetails title="详细指标与图表" hint="平整度 / 坡角 / 折痕">{() => <>
           <section className="assessment-block"><div className="assessment-block-heading"><h2>01 · 面平整度与整体形貌</h2><select aria-label="评估热图类型" value={mapMode} onChange={(event) => setMapMode(event.target.value as typeof mapMode)}><option value="height">高度残差热图</option><option value="cross">跨轴坡角热图</option><option value="normal">法向夹角热图</option></select></div>
             <div className="assessment-surface-grid"><AssessmentHeatmap result={r} mode={mapMode} /><div className="assessment-context"><h3>测量口径</h3><dl><dt>基准平面</dt><dd>{r.options.plane === 'robust' ? 'Huber 稳健拟合' : '最小二乘拟合'}</dd><dt>摆放倾斜角</dt><dd>{number(r.planeTiltDeg, 3)}°（已去除）</dd><dt>整体翘曲 Bow98</dt><dd>{number(r.bow98Um)} µm · 再滤波 σ {r.options.bowSigmaMm} mm</dd><dt>源矩阵有效 / 选入点</dt><dd>{r.sourcePoints.valid.toLocaleString()} / {r.sourcePoints.selected.toLocaleString()}</dd><dt>中央范围</dt><dd>转轴两侧 ±{r.options.coreHalfWidthMm} mm</dd></dl><p>PV 对尖刺最敏感；RMS 描述整体偏差；F98 降低少数极端点的影响；Bow98 只描述更大尺度的起伏。它们不能相互替代。</p></div></div>
             <HeightTable surface={r.surface} raw={r.raw} central={r.central} />
@@ -231,21 +269,23 @@ export default function AssessmentWorkspace(props: Props) {
           {!!r.sensitivity.length && <section className="assessment-block"><h2>滤波尺度敏感性</h2><p className="assessment-note">同一选区、同一网格，仅改变 σ；差异不是测量不确定度。</p><table className="assessment-table"><thead><tr><th>σ mm</th><th>RMS µm</th><th>F98 µm</th><th>中央跨轴 P95 °</th></tr></thead><tbody>
             {[...r.sensitivity, { sigmaMm: r.options.sigmaMm, rmsUm: r.surface.rmsUm, f98Um: r.surface.f98Um, cross95Deg: r.centralSlopes?.cross.p95Deg ?? null }].sort((a, b) => a.sigmaMm - b.sigmaMm).map((v, i) => <tr key={i}><td>{v.sigmaMm}</td><td>{number(v.rmsUm)}</td><td>{number(v.f98Um)}</td><td>{number(v.cross95Deg, 3)}</td></tr>)}
           </tbody></table></section>}
+          </>}</AssessmentResultDetails>
         </>}
-        <section className="assessment-block"><div className="assessment-block-heading"><h2>本次会话对比 · 最多 8 条</h2><button className="secondary-button" disabled={!session.comparisons.length} onClick={() => downloadAssessment(session.comparisons, 'csv')}><Download size={14} />导出对比 CSV</button></div>
-          <p className="assessment-note">可切换采集记录后逐条加入。结果仅驻留本次页面会话，不做机型身份或时间配对推断；刷新会清除。</p>
-          {session.comparisons.length > 0 ? <div className="assessment-table-wrap"><table className="assessment-table"><thead><tr><th>数据／采集记录</th><th>范围 mm</th><th>RMS µm</th><th>F98 µm</th><th>中央跨轴 P95 °</th><th>方法检查</th><th>操作</th></tr></thead><tbody>
+        {session.comparisons.length > 0 && <section className="assessment-block"><div className="assessment-block-heading"><h2>本次会话对比 · 最多 8 条</h2><button className="secondary-button" disabled={!session.comparisons.length} onClick={() => downloadAssessment(session.comparisons, 'csv')}><Download size={14} />导出对比 CSV</button></div>
+          <p className="assessment-note">切换记录后可继续加入；刷新会清空。请自行确认机型、时间和区域对应关系。</p>
+          <div className="assessment-table-wrap"><table className="assessment-table"><thead><tr><th>数据／采集记录</th><th>范围 mm</th><th>RMS µm</th><th>F98 µm</th><th>中央跨轴 P95 °</th><th>方法检查</th><th>操作</th></tr></thead><tbody>
             {session.comparisons.map((v) => <tr key={v.id}><th>{v.fileName}<br />{v.captureName} · {v.sourceKind === 'original' ? '原始' : '修复后'}</th><td>{number(v.result.bounds.x[1] - v.result.bounds.x[0], 1)}×{number(v.result.bounds.y[1] - v.result.bounds.y[0], 1)}</td><td>{number(v.result.surface.rmsUm)}</td><td>{number(v.result.surface.f98Um)}</td><td>{number(v.result.centralSlopes?.cross.p95Deg, 3)}</td><td>{assessmentComparisonKey(v) === assessmentComparisonKey(session.comparisons[0]) ? '尺度口径一致；需人工配准' : '范围或口径不同'}</td><td><button className="assessment-delete" aria-label={`删除对比 ${v.captureName}`} onClick={() => onSession((s) => ({ ...s, comparisons: s.comparisons.filter((item) => item.id !== v.id) }))}><Trash2 size={14} /></button></td></tr>)}
-          </tbody></table></div> : <p className="assessment-note">尚无对比记录。计算后点击右上方“加入本次会话对比”。</p>}
-        </section>
-        <details className="assessment-methods"><summary>指标定义、计算边界与方法来源</summary>
+          </tbody></table></div>
+        </section>}
+        <AssessmentResultDetails title="计算说明与范围" hint="采样 / 基准 / 公式">{() => <div className="assessment-methods">
+          {r && <div className="assessment-provenance"><span>X {number(r.bounds.x[0], 3)}–{number(r.bounds.x[1], 3)} mm</span><span>Y {number(r.bounds.y[0], 3)}–{number(r.bounds.y[1], 3)} mm</span><span>Z {number(r.bounds.z[0], 4)}–{number(r.bounds.z[1], 4)} mm</span><span>实际间距 {number(r.grid.dxMm, 4)} × {number(r.grid.dyMm, 4)} mm</span><span>有效面积 {number(r.grid.eligibleAreaMm2)} mm²</span><span>{r.grid.nx} × {r.grid.ny} 格 · σ {r.options.sigmaMm} mm</span></div>}
           <p>网格按等面积单元中心双线性采样，分析间距不小于源 XY 间距，最多 60 万格。只分析选区内的表面；不创建缺失高度、不截尾删除高低点。滤波前去倾斜，使用归一化高斯卷积，缺测及覆盖不足 99% 的滤波邻域不参与结果。</p>
           <p>平面为 z=ax+by+c。面高度残差是 (z−ax−by−c)/√(1+a²+b²)。RMS=√mean(r²)，平均绝对偏差=mean(|r|)，PV=max(r)−min(r)，F98=P99−P1。Sa/Sq/Sp/Sv/Ssk/Sku/Sdq 仅借用数学统计形式，不是经过规定滤波链的 ISO 粗糙度认证结果；PV 也不是最小区域法平面度。</p>
           <p>方向坡角为 atan(局部方向梯度)−atan(平面方向梯度)。法向夹角使用局部法向与平面法向的精确三维夹角。坡度%=100×tan(坡角)。梯度 RMS=√mean((∂z/∂x−a)²+(∂z/∂y−b)²)。超阈值比例按有效梯度网格面积计算，不含缺测和边界点。</p>
           <p>折痕先按沿轴分带取中位截面，再进行一维形貌滤波；双肩线参考范围为转轴两侧 [肩部内缘, 肩部外缘]。D/B 在中央半宽内取最低／最高偏差；W50 是中央最大绝对主峰两侧半高交点的间距，交点不存在则留空；A 为两侧肩部内缘之间的绝对截面积。中央未完整覆盖、肩部不完整或覆盖率不足 98% 的分带不报告折痕指标。</p>
           <p>本页是可复现的几何评价工具，不估计仪器误差、视觉可见度、寿命、触感或“合格”分数。默认中线不等于真实转轴，跨机型仍需共同物理区域与对齐。光照反射、屏幕亮度和材料光学性质不能从高度矩阵单独推断。</p>
           <p>方法参考：<a href="https://www.keyence.com/ss/products/microscope/roughness/surface/sdq-root-mean-square-gradient.jsp" target="_blank" rel="noreferrer">基恩士面积参数与 Sdq 定义</a>；<a href="https://www.keyence.com/products/3d-measure/roughness-measure/applications/a-method-for-highly-accurate-and-instantaneous-measurement-of-flatness.jsp" target="_blank" rel="noreferrer">基恩士平面度说明</a>。本页算法及处理边界以本页定义和导出的 JSON 为准，不宣称复刻仪器软件或此前离线报告的全部预处理。</p>
-        </details>
+        </div>}</AssessmentResultDetails>
       </section>
     </div>
     <footer className="assessment-footer"><span>{supported ? `${model?.label} · ${model?.spikeRepair && session.source === 'current' ? '修复后高度场' : '原始高度场'}` : '等待 ZAG 数据'}</span><span>{record ? fresh ? '结果与当前范围和参数一致' : '旧结果 · 等待重算' : '等待开始评估'}</span><span>仅几何评估 · 不应用 XYZ 显示倍率</span></footer>

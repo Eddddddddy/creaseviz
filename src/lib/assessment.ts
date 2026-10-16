@@ -239,13 +239,13 @@ export function assessZagSurface(source: ZagRegionSource, requestedBounds: Regio
   progress?.(.75)
   const crease = assessCrease(raw, xs, ys, bounds, o, center)
   const warnings: string[] = []
-  if (sourcePoints.valid > sourcePoints.selected) warnings.push('Z 选区排除了部分有效高度；这种截断会降低峰谷值、RMS 和坡角，不宜与全 Z 范围直接比较。')
-  if (surfaceMetrics.count / raw.length < .98) warnings.push('有效覆盖率低于 98%；缺测处未填零，缺测邻域不参与统计。请检查热图空白及有效面积。')
-  if (!crease.validBands) warnings.push('折痕指标不可用：需要完整中央区域及两侧肩部；请扩大跨轴选区或调整转轴位置／肩部范围。面平整度仍可计算。')
-  else if (crease.validBands < crease.totalBands) warnings.push('部分分带因缺测或肩部不完整被排除；折痕汇总仅代表有效分带。')
-  if (Math.abs(dx - o.stepMm) > .005 || Math.abs(dy - o.stepMm) > .005) warnings.push('为不超出源分辨率及 60 万格预算，使用了页面所示的实际分析间距；极小尖刺可能无法被此网格捕获。')
-  if (o.hingeCenterMm === null) warnings.push('转轴位置暂按当前评估区域中线；它不是自动识别或跨机型配准，请人工确认。')
-  if (o.sigmaMm === 0) warnings.push('已关闭形貌滤波；坡角和极值对扫描噪声及孤立尖刺更敏感。')
+  if (sourcePoints.valid > sourcePoints.selected) warnings.push('Z 选区裁掉了部分高度，结果可能偏低。请勿直接与完整高度范围比较。')
+  if (surfaceMetrics.count / raw.length < .98) warnings.push('有效覆盖率低于 98%。缺测不填零、缺测邻域不参与统计；请检查热图空白。')
+  if (!crease.validBands) warnings.push('折痕指标不可用：中央或两侧参考区不完整。请扩大选区或调整转轴及参考区；平整度仍可计算。')
+  else if (crease.validBands < crease.totalBands) warnings.push('部分位置缺测或缺少两侧参考区，折痕结果仅包含可用位置。')
+  if (Math.abs(dx - o.stepMm) > .005 || Math.abs(dy - o.stepMm) > .005) warnings.push('已按扫描分辨率和 60 万格上限调整计算间距。细小尖刺可能漏算。')
+  if (o.hingeCenterMm === null) warnings.push('暂用区域中线作为转轴，请确认位置。等面积不代表各机型已对齐。')
+  if (o.sigmaMm === 0) warnings.push('未滤波：噪声和尖刺会更影响坡角与极值。')
   const mapNx = Math.min(200, nx), mapNy = Math.min(160, ny)
   const maps: AssessmentResult['maps'] = { nx: mapNx, ny: mapNy, residualUm: [], crossDeg: [], normalDeg: [] }
   for (let y = 0; y < mapNy; y++) for (let x = 0; x < mapNx; x++) {

@@ -1,4 +1,5 @@
 import type { RegionBounds } from '../types'
+import type { EqualAreaSize } from './assessmentRegion'
 
 export interface AssessmentOptions {
   stepMm: number
@@ -115,6 +116,7 @@ export interface AssessmentSession {
   options: AssessmentOptions
   scope: 'selection' | 'full'
   source: 'current' | 'original'
+  equalArea?: EqualAreaSize
   result?: AssessmentRecord
   comparisons: AssessmentRecord[]
 }
