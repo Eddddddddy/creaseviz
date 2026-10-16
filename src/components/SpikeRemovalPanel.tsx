@@ -1,5 +1,6 @@
 import { Eraser } from 'lucide-react'
-import type { SpikeRemovalOptions, SpikeRemovalStats } from '../lib/spikeRemoval'
+import { DEFAULT_SPIKE_OPTIONS, type SpikeRemovalOptions, type SpikeRemovalStats } from '../lib/spikeRemoval'
+import AdvancedSettings from './AdvancedSettings'
 
 export interface SpikeRemovalPanelProps {
   spikeOptions: SpikeRemovalOptions
@@ -20,10 +21,14 @@ export default function SpikeRemovalPanel(props: SpikeRemovalPanelProps) {
   const changed = report && (report.options.thresholdUm !== options.thresholdUm
     || report.options.radiusMm !== options.radiusMm || report.options.direction !== options.direction)
   const disabled = props.spikeDisabled || props.spikeProcessing
+  const recommended = options.thresholdUm === DEFAULT_SPIKE_OPTIONS.thresholdUm
+    && options.radiusMm === DEFAULT_SPIKE_OPTIONS.radiusMm && options.direction === DEFAULT_SPIKE_OPTIONS.direction
   return (
     <section className="inspector-section spike-removal-section">
       <h2><Eraser size={17} />去尖刺 <span className="processing-badge">可逆修复</span></h2>
-      <p className="obj-export-note">仅修复孤立的局部突跳，不整体平滑折痕。每次都从当前记录的原始数据重新计算。</p>
+      <p className="obj-export-note">仅修复孤立突跳，不整体平滑折痕。使用默认参数即可开始。</p>
+      <div className="settings-default-summary"><strong>{recommended ? '推荐参数' : '自定义参数'}</strong><span>{options.thresholdUm} µm · {options.radiusMm} mm · {options.direction === 'peaks' ? '仅向上尖刺' : '向上 + 向下突跳'}</span></div>
+      <AdvancedSettings label="去尖刺高级设置" hint={recommended ? '推荐参数' : '已自定义'}>
       <label className="field-row numeric-field">
         <span>高度阈值</span>
         <input aria-label="去尖刺高度阈值" type="number" min="1" max="1000" step="1"
@@ -46,6 +51,9 @@ export default function SpikeRemovalPanel(props: SpikeRemovalPanelProps) {
         </select>
       </label>
       <p className="obj-export-note">阈值越低越敏感；半径决定参考邻域，最长 64 像素。长条折痕、大范围起伏及缺测邻域受保护。作用于整条采集记录，不仅是选区。</p>
+      <button className="text-button settings-reset" disabled={disabled || recommended}
+        onClick={() => props.onSpikeOptions({ ...DEFAULT_SPIKE_OPTIONS })}>恢复推荐参数</button>
+      </AdvancedSettings>
       <div className="spike-actions">
         <button className="obj-download-button" disabled={disabled} onClick={props.onRepairSpikes}>
           {props.spikeProcessing ? `正在修复 ${Math.round(props.spikeProgress * 100)}%` : report ? '重新计算修复' : '计算并应用去尖刺'}

@@ -1,6 +1,7 @@
 import { Crop, RotateCcw } from 'lucide-react'
 import type { RegionBounds, ViewerModel } from '../types'
 import { fullModelRegion } from '../lib/region'
+import AdvancedSettings from './AdvancedSettings'
 
 interface Props {
   model: ViewerModel
@@ -38,8 +39,9 @@ export default function RegionSelection({ model, enabled, bounds, disabled, onEn
           <span className="profile-plane-toggle-track"><i /></span>{enabled ? '已启用' : '未启用'}
         </button>
       </div>
-      <p className="obj-export-note">按真实毫米坐标裁剪。X/Y 为屏幕平面，Z 为高度；蓝框内的表面会被保留。</p>
+      <p className="obj-export-note">按真实毫米裁剪。X/Y 为屏幕平面，Z 为高度。</p>
       <fieldset hidden={!enabled} disabled={!enabled || disabled} className="region-fields">
+        <AdvancedSettings label="XYZ 选区高级设置" hint="精确调整范围">
         {(['x', 'y', 'z'] as const).map((axis) => (
           <div className="region-axis" key={axis}>
             <div className="region-axis-heading"><strong>{axis.toUpperCase()}</strong><span>{axis === 'z' ? '高度' : axis === 'x' ? '横向' : '纵向'} · mm</span></div>
@@ -77,15 +79,16 @@ export default function RegionSelection({ model, enabled, bounds, disabled, onEn
             </div>
           </div>
         ))}
-        <div className="region-actions">
           <button className="secondary-button" onClick={() => onBounds({
             x: [model.widthMm * 0.25, model.widthMm * 0.75],
             y: [model.lengthMm * 0.25, model.lengthMm * 0.75],
             z: full.z,
           })}>中央区域</button>
+        <div className="region-actions">
           <button className="secondary-button" onClick={() => onBounds(full)}><RotateCcw size={12} />恢复全范围</button>
+          <button className="secondary-button" onClick={onFocus}>聚焦选区</button>
         </div>
-        <button className="secondary-button region-focus" onClick={onFocus}>聚焦选区</button>
+        </AdvancedSettings>
       </fieldset>
       {enabled && <p className="region-dimensions">选区 {(bounds.x[1] - bounds.x[0]).toFixed(3)} × {(bounds.y[1] - bounds.y[0]).toFixed(3)} × {(bounds.z[1] - bounds.z[0]).toFixed(3)} mm</p>}
     </section>

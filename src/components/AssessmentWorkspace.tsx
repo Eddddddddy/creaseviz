@@ -4,10 +4,11 @@ import { getZagModelSource } from '../lib/models'
 import { fullModelRegion } from '../lib/region'
 import { assessmentSourceBounds, calculateAssessment } from '../lib/assessmentClient'
 import { assessmentComparisonKey, downloadAssessment } from '../lib/assessmentExport'
-import type { AngleMetrics, AssessmentOptions, AssessmentRecord, AssessmentSession, HeightMetrics } from '../lib/assessmentTypes'
+import { DEFAULT_ASSESSMENT_OPTIONS, type AngleMetrics, type AssessmentOptions, type AssessmentRecord, type AssessmentSession, type HeightMetrics } from '../lib/assessmentTypes'
 import type { CaptureSummary, RegionBounds, ViewerModel } from '../types'
 import RegionSelection from './RegionSelection'
 import { AssessmentHeatmap, AssessmentLineChart } from './AssessmentCharts'
+import AdvancedSettings from './AdvancedSettings'
 
 interface Props {
   model?: ViewerModel
@@ -67,6 +68,8 @@ export default function AssessmentWorkspace(props: Props) {
   const record = session.result, r = record?.result, fresh = record?.signature === signature
   const disabled = computing || props.busy
   const supported = model?.kind === 'zag' && model.hasSourceData
+  const recommended = (Object.keys(DEFAULT_ASSESSMENT_OPTIONS) as (keyof AssessmentOptions)[])
+    .every((key) => key === 'hingeAxis' || o[key] === DEFAULT_ASSESSMENT_OPTIONS[key])
   useEffect(() => () => { abortRef.current?.abort() }, [])
   useEffect(() => {
     abortRef.current?.abort(); abortRef.current = undefined; setComputing(false)
@@ -134,13 +137,20 @@ export default function AssessmentWorkspace(props: Props) {
           <label className="assessment-select"><span>评估范围</span><select aria-label="评估范围" value={session.scope} disabled={disabled} onChange={(event) => onSession((s) => ({ ...s, scope: event.target.value as AssessmentSession['scope'] }))}>
             <option value="selection">当前 XYZ 选区{props.regionEnabled ? '' : '（未开启，使用完整记录）'}</option><option value="full">完整采集记录（忽略选区）</option>
           </select></label>
-          <p className="assessment-note">仅使用所选范围的数据。显示倍率、灯光、相机不参与计算。打开／切换记录后请重新评估。</p>
+          <p className="assessment-note">按真实尺寸计算，显示倍率不影响结果。</p>
           <div className="assessment-preset-buttons"><button disabled={disabled || !supported} onClick={() => preset(80, 30)}>共同区域 80×30</button><button disabled={disabled || !supported} onClick={() => preset(80, 12)}>中央区域 80×12</button></div>
-          <p className="assessment-note">快捷选区以整幅扫描中心居中，长边沿所设转轴；保留当前 Z 范围，不代表已完成物理配准。</p>
+          <p className="assessment-note">快捷选区按扫描中心居中，保留 Z 范围；跨机型仍需人工对齐。</p>
         </section>
         {model?.kind === 'zag' && region && <RegionSelection model={model} enabled={props.regionEnabled} bounds={region} disabled={disabled}
           onEnabled={props.onRegionEnabled} onBounds={props.onRegion} onFocus={() => { props.onFocusRegion(); props.onBack() }} />}
-        <section className="inspector-section"><h2>分析尺度与参考平面</h2>
+        <section className="inspector-section"><h2>评估方法</h2>
+          <label className="assessment-select"><span>转轴沿扫描</span><select aria-label="转轴方向" value={o.hingeAxis} disabled={disabled} onChange={(event) => onSession((s) => ({ ...s, options: { ...s.options, hingeAxis: event.target.value as 'x' | 'y', hingeCenterMm: null } }))}>
+            <option value="x">X 方向（跨轴为 Y）</option><option value="y">Y 方向（跨轴为 X）</option>
+          </select></label>
+          <p className="assessment-note">默认参考区域中线，转轴方向与位置需人工确认。</p>
+          <div className="settings-default-summary"><strong>{recommended ? '推荐参数 · 可直接评估' : '自定义参数 · 收起后仍生效'}</strong><span>{recommended ? '自动去倾斜、轻度形貌滤波，兼顾整体与中央折痕。' : '当前计算使用高级设置中的参数，可一键恢复推荐值。'}</span></div>
+          <AdvancedSettings label="屏幕评估高级设置" hint={recommended ? '推荐参数' : '已自定义'}>
+          <h3 className="settings-subheading">分析尺度与参考平面</h3>
           <Numeric label="目标分析间距" value={o.stepMm} min={.02} max={2} onChange={(v) => option('stepMm', v)} disabled={disabled} />
           <label className="assessment-select"><span>形貌滤波 σ</span><select aria-label="形貌滤波尺度" value={o.sigmaMm} disabled={disabled} onChange={(event) => option('sigmaMm', Number(event.target.value))}>
             {[0, .15, .25, .5, 1, 2].map((v) => <option key={v} value={v}>{v === 0 ? '不滤波' : `${v} mm`}</option>)}
@@ -152,11 +162,7 @@ export default function AssessmentWorkspace(props: Props) {
             <option value="least-squares">最小二乘（默认）</option><option value="robust">稳健拟合（Huber）</option>
           </select></label>
           <label className="assessment-checkbox"><input type="checkbox" checked={o.sensitivity} disabled={disabled} onChange={(event) => option('sensitivity', event.target.checked)} />同时检查 σ 0.15 / 0.5 mm 敏感性</label>
-        </section>
-        <section className="inspector-section"><h2>中央折痕与坡角</h2>
-          <label className="assessment-select"><span>转轴沿扫描</span><select aria-label="转轴方向" value={o.hingeAxis} disabled={disabled} onChange={(event) => onSession((s) => ({ ...s, options: { ...s.options, hingeAxis: event.target.value as 'x' | 'y', hingeCenterMm: null } }))}>
-            <option value="x">X 方向（跨轴为 Y）</option><option value="y">Y 方向（跨轴为 X）</option>
-          </select></label>
+          <h3 className="settings-subheading">中央折痕与坡角</h3>
           <label className="assessment-checkbox"><input type="checkbox" aria-label="转轴使用区域中线" checked={o.hingeCenterMm === null} disabled={disabled}
             onChange={(event) => option('hingeCenterMm', event.target.checked ? null : scopeRegion ? (scopeRegion[o.hingeAxis === 'x' ? 'y' : 'x'][0] + scopeRegion[o.hingeAxis === 'x' ? 'y' : 'x'][1]) / 2 : 0)} />转轴使用评估区域中线</label>
           {o.hingeCenterMm !== null && <Numeric label="转轴跨轴坐标" value={o.hingeCenterMm} min={0} max={1000} onChange={(v) => option('hingeCenterMm', v)} disabled={disabled} />}
@@ -165,6 +171,10 @@ export default function AssessmentWorkspace(props: Props) {
           <Numeric label="肩部外缘距离" value={o.shoulderOuterMm} min={1} max={60} onChange={(v) => option('shoulderOuterMm', v)} disabled={disabled} />
           <Numeric label="沿轴分带宽度" value={o.bandWidthMm} min={.5} max={20} onChange={(v) => option('bandWidthMm', v)} disabled={disabled} />
           <Numeric label="坡角超限阈值" value={o.angleThresholdDeg} min={.1} max={30} unit="°" step={.1} onChange={(v) => option('angleThresholdDeg', v)} disabled={disabled} />
+          </AdvancedSettings>
+          {!recommended && <button className="text-button settings-reset" disabled={disabled}
+            title="恢复推荐分析参数，保留转轴方向、数据来源和当前选区"
+            onClick={() => onSession((s) => ({ ...s, options: { ...DEFAULT_ASSESSMENT_OPTIONS, hingeAxis: s.options.hingeAxis } }))}>恢复推荐参数</button>}
         </section>
         <div className="assessment-run"><button className="obj-download-button" disabled={!supported || disabled} onClick={() => void analyze()}><Play size={15} />{computing ? `正在计算 ${Math.round(progress * 100)}%` : record ? '重新评估' : '开始评估'}</button>
           {computing && <button className="secondary-button" onClick={cancel}><Square size={12} />取消计算</button>}

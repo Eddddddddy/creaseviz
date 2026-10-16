@@ -4,6 +4,7 @@ import type { CaptureSummary, ObjDetail, RegionBounds, SurfaceMode, ViewerModel 
 import RegionSelection from './RegionSelection'
 import ObjExportPanel from './ObjExportPanel'
 import SpikeRemovalPanel, { type SpikeRemovalPanelProps } from './SpikeRemovalPanel'
+import AdvancedSettings from './AdvancedSettings'
 
 interface InspectorProps extends SpikeRemovalPanelProps {
   model?: ViewerModel
@@ -156,14 +157,16 @@ export default function Inspector(props: InspectorProps) {
           <button disabled={!props.model || (props.model.kind !== 'zag' && !props.model.textureRgba)} className={props.mode === 'texture' ? 'is-active' : ''} onClick={() => props.onMode('texture')}><ImageIcon size={14} />纹理</button>
           <button className={props.mode === 'solid' ? 'is-active' : ''} onClick={() => props.onMode('solid')}>素模</button>
         </div>
+        <div className="appearance-controls"><AppearanceControl label="场景灯强度" value={props.lightStrength} onChange={props.onLightStrength} disabled={!props.model} max={2} /></div>
+        {props.textureLoading && <p className="texture-status"><span />正在载入 ZAG 表面纹理…</p>}
+        <AdvancedSettings label="深度着色高级设置" hint="色标 / 纹理">
         <div className="appearance-controls">
           <AppearanceControl label="高度色亮度" value={props.paletteBrightness} onChange={props.onPaletteBrightness} disabled={!props.model} min={0.25} />
-          <AppearanceControl label="场景灯强度" value={props.lightStrength} onChange={props.onLightStrength} disabled={!props.model} max={2} />
           <AppearanceControl label="纹理融合" value={props.textureMix} onChange={props.onTextureMix} disabled={props.model?.kind !== 'zag'} />
         </div>
-        {props.textureLoading && <p className="texture-status"><span />正在载入 ZAG 表面纹理…</p>}
         <label className="field-row numeric-field"><span>最小值</span><input type="number" step="0.001" value={Number(props.minHeight.toFixed(6))} onChange={(e) => props.onMinHeight(Number(e.target.value))} /><em>mm</em></label>
         <label className="field-row numeric-field"><span>最大值</span><input type="number" step="0.001" value={Number(props.maxHeight.toFixed(6))} onChange={(e) => props.onMaxHeight(Number(e.target.value))} /><em>mm</em></label>
+        </AdvancedSettings>
         <div className="auto-range-row">
           <span>{props.regionEnabled ? '按当前 XYZ 选区计算' : '按完整模型恢复'}</span>
           <button className="text-button" disabled={!props.model || props.regionDisabled || props.autoRangeComputing}
@@ -177,20 +180,24 @@ export default function Inspector(props: InspectorProps) {
 
       <section className="inspector-section">
         <h2><Ratio size={17} />显示比例</h2>
-        <ScaleControl label="X" value={props.scaleX} onChange={props.onScaleX} />
-        <ScaleControl label="Y" value={props.scaleY} onChange={props.onScaleY} />
         <ScaleControl label="Z" value={props.scaleZ} onChange={props.onScaleZ} max={40} />
         <div className="scale-presets">
           {[1, 5, 10, 20].map((value) => <button key={value} className={props.scaleZ === value ? 'is-active' : ''} onClick={() => props.onScaleZ(value)}>Z×{value}</button>)}
         </div>
         <button className="secondary-button" onClick={() => { props.onScaleX(1); props.onScaleY(1); props.onScaleZ(1) }}>恢复真实比例 1:1:1</button>
+        <AdvancedSettings label="显示比例高级设置" hint={`X ${props.scaleX.toFixed(2)}× / Y ${props.scaleY.toFixed(2)}×`}>
+          <ScaleControl label="X" value={props.scaleX} onChange={props.onScaleX} />
+          <ScaleControl label="Y" value={props.scaleY} onChange={props.onScaleY} />
+        </AdvancedSettings>
         {props.scaleZ !== 1 && <p className="scale-notice">当前 Z 为 {props.scaleZ.toFixed(2)}× 夸张显示，测量数值保持真实。</p>}
       </section>
 
       <section className="inspector-section">
         <h2><Layers3 size={17} />图层</h2>
-        <LayerToggle label="坐标网格" checked={props.showGrid} onChange={props.onShowGrid} />
-        <LayerToggle label="截面曲线" checked={props.showProfile} onChange={props.onShowProfile} />
+        <AdvancedSettings label="图层高级设置" hint="网格 / 截面">
+          <LayerToggle label="坐标网格" checked={props.showGrid} onChange={props.onShowGrid} />
+          <LayerToggle label="截面曲线" checked={props.showProfile} onChange={props.onShowProfile} />
+        </AdvancedSettings>
       </section>
     </aside>
   )

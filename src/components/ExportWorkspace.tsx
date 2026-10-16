@@ -34,6 +34,7 @@ import {
   videoBitrate,
 } from '../lib/videoExport'
 import ExportCanvas from './ExportCanvas'
+import AdvancedSettings from './AdvancedSettings'
 
 interface ExportWorkspaceProps {
   model?: ViewerModel
@@ -513,14 +514,16 @@ export default function ExportWorkspace(props: ExportWorkspaceProps) {
                 <button onClick={() => applyCameraPreset('side')}>侧视</button>
                 <button onClick={() => applyCameraPreset('iso')}>斜视</button>
               </div>
+              <NumberControl label="距离" value={cameraSettings.distanceMm} unit="mm" min={0.01} step={0.1} onChange={(value) => updateCamera({ distanceMm: Math.max(0.01, value) })} />
+              <AdvancedSettings label="影视相机高级设置" hint="角度 / 观察中心">
               <NumberControl label="方位角" value={cameraSettings.azimuthDeg} unit="°" step={0.1} onChange={(value) => updateCamera({ azimuthDeg: value })} />
               <NumberControl label="俯仰角" value={cameraSettings.elevationDeg} unit="°" min={-89} max={89} step={0.1} onChange={(value) => updateCamera({ elevationDeg: value })} />
-              <NumberControl label="距离" value={cameraSettings.distanceMm} unit="mm" min={0.01} step={0.1} onChange={(value) => updateCamera({ distanceMm: Math.max(0.01, value) })} />
               <div className="export-subheading">观察中心</div>
               <NumberControl label="X" value={cameraSettings.targetX} unit="mm" step={0.1} onChange={(value) => updateCamera({ targetX: value })} />
               <NumberControl label="Y" value={cameraSettings.targetY} unit="mm" step={0.1} onChange={(value) => updateCamera({ targetY: value })} />
               <NumberControl label="Z" value={cameraSettings.targetZ} unit="mm" step={0.1} onChange={(value) => updateCamera({ targetZ: value })} />
               <div className="camera-position-readout">相机位置 X {cameraPosition.x.toFixed(1)} / Y {cameraPosition.y.toFixed(1)} / Z {cameraPosition.z.toFixed(1)} mm</div>
+              </AdvancedSettings>
               <div className="export-button-row">
                 <button disabled={!props.viewerCamera} onClick={() => props.viewerCamera && setCameraSettings(props.viewerCamera)}>使用查看器视角</button>
                 <button onClick={() => setCameraSettings(defaultCamera(props.model))}>重置</button>
@@ -537,6 +540,9 @@ export default function ExportWorkspace(props: ExportWorkspaceProps) {
                   ))}
                 </div>
               </div>
+              <NumberControl label="总角度" value={totalAngle} unit="°" min={0.1} max={3600} step={1} onChange={(value) => { setTotalAngle(Math.min(3600, Math.max(0.1, value))); resetPlayback() }} />
+              <NumberControl label="速度" value={rotationSpeed} unit="°/s" min={0.1} max={360} step={0.1} onChange={(value) => setRotationSpeed(Math.min(360, Math.max(0.1, value)))} />
+              <AdvancedSettings label="影视旋转高级设置" hint={`${rotationDirection === 'clockwise' ? '顺时针' : '逆时针'} / 起始 ${startAngle}°`}>
               <label className="export-field-row">
                 <span>方向</span>
                 <select value={rotationDirection} onChange={(event) => { setRotationDirection(event.target.value as RotationDirection); resetPlayback() }}>
@@ -545,8 +551,7 @@ export default function ExportWorkspace(props: ExportWorkspaceProps) {
                 </select>
               </label>
               <NumberControl label="起始角" value={startAngle} unit="°" step={0.1} onChange={(value) => { setStartAngle(value); resetPlayback() }} />
-              <NumberControl label="总角度" value={totalAngle} unit="°" min={0.1} max={3600} step={1} onChange={(value) => { setTotalAngle(Math.min(3600, Math.max(0.1, value))); resetPlayback() }} />
-              <NumberControl label="速度" value={rotationSpeed} unit="°/s" min={0.1} max={360} step={0.1} onChange={(value) => setRotationSpeed(Math.min(360, Math.max(0.1, value)))} />
+              </AdvancedSettings>
               <div className="derived-value"><Gauge size={14} /><span>计算时长</span><strong>{formatClock(durationSeconds, true)}</strong></div>
             </section>
 
@@ -558,17 +563,19 @@ export default function ExportWorkspace(props: ExportWorkspaceProps) {
                   {RESOLUTIONS.map((resolution) => <option key={resolution.id} value={resolution.id}>{resolution.label}</option>)}
                 </select>
               </label>
-              <div className="custom-resolution">
+              {resolutionId === 'custom' && <div className="custom-resolution">
                 <input aria-label="视频宽度" type="number" min="64" max="7680" value={outputWidth} onChange={(event) => { setResolutionId('custom'); setOutputWidth(Math.min(clampDimension(Number(event.target.value)), Math.floor(VIDEO_LIMITS.maxPixels / outputHeight))) }} />
                 <span>×</span>
                 <input aria-label="视频高度" type="number" min="64" max="7680" value={outputHeight} onChange={(event) => { setResolutionId('custom'); setOutputHeight(Math.min(clampDimension(Number(event.target.value)), Math.floor(VIDEO_LIMITS.maxPixels / outputWidth))) }} />
                 <em>px</em>
-              </div>
+              </div>}
               <label className="export-field-row"><span>帧率</span><select value={outputFps} onChange={(event) => setOutputFps(Number(event.target.value))}>{[24, 25, 30, 50, 60].map((fps) => <option key={fps} value={fps}>{fps} FPS</option>)}</select></label>
+              <AdvancedSettings label="影视输出高级设置" hint={`${quality === 'high' ? '高画质' : quality === 'maximum' ? '最高画质' : '标准画质'} / ${showGround ? '显示地面' : '无地面'}`}>
               <label className="export-field-row"><span>画质</span><select value={quality} onChange={(event) => setQuality(event.target.value as ExportQuality)}><option value="standard">标准</option><option value="high">高（推荐）</option><option value="maximum">最高</option></select></label>
               <label className="export-field-row color-field"><span>背景</span><input type="color" value={backgroundColor} onChange={(event) => setBackgroundColor(event.target.value)} /><output>{backgroundColor.toUpperCase()}</output></label>
               <ToggleRow label="地面" checked={showGround} onChange={setShowGround} />
               <ToggleRow label="坐标网格" description="会录入视频" checked={showGrid} onChange={setShowGrid} />
+              </AdvancedSettings>
               {(outputWidth >= 3840 || outputHeight >= 2160 || outputFps >= 60) && <p className="export-performance-note">高分辨率或高帧率会显著增加 GPU 负载；实时录制时实际帧率取决于本机性能。</p>}
             </section>
           </fieldset>
@@ -578,7 +585,9 @@ export default function ExportWorkspace(props: ExportWorkspaceProps) {
             <div className="recording-status-row"><span className={`record-status-dot is-${recorderStatus}`} /><span>录制状态</span><strong>{statusLabel[recorderStatus]}</strong></div>
             <div className="recording-progress"><i style={{ width: `${progressRatio * 100}%` }} /></div>
             <dl className="recording-metadata"><dt>格式</dt><dd>{mimeType?.includes('vp9') ? 'WebM · VP9' : mimeType?.includes('vp8') ? 'WebM · VP8' : 'WebM'}</dd><dt>已用时</dt><dd>{formatClock(recordingElapsed, true)}</dd></dl>
-            <ToggleRow label="从起始角重新录制" description="关闭时从当前播放位置继续" checked={restartOnRecord} disabled={recordingLocked} onChange={setRestartOnRecord} />
+            <AdvancedSettings label="录制高级设置" hint={restartOnRecord ? '从起始角录制' : '从当前进度录制'}>
+              <ToggleRow label="从起始角重新录制" description="关闭时从当前播放位置继续" checked={restartOnRecord} disabled={recordingLocked} onChange={setRestartOnRecord} />
+            </AdvancedSettings>
             {recorderStatus === 'unsupported' && <p className="recording-error">当前浏览器不支持画布视频录制，请使用最新版 Chromium 浏览器。</p>}
             {recordingError && <p className="recording-error">{recordingError}</p>}
             {recordingResult && (
