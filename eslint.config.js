@@ -11,6 +11,7 @@ export default tseslint.config(
       'node_modules/**',
       'private_assets/**',
       'analysis_output/**',
+      'output/**',
     ],
   },
   js.configs.recommended,

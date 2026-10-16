@@ -40,18 +40,21 @@ function CameraRig({ model, request, controlsRef }: {
   controlsRef: RefObject<OrbitControlsHandle | null>
 }) {
   const { camera } = useThree()
+  const widthMm = model?.widthMm
+  const lengthMm = model?.lengthMm
+  const identity = model ? `${model.fileName}:${model.capture?.id ?? model.kind}` : undefined
   useEffect(() => {
-    if (!model || !controlsRef.current) return
+    if (widthMm === undefined || lengthMm === undefined || !controlsRef.current) return
     const region = request.region
     const [sx, sy, sz] = request.scale ?? [1, 1, 1]
     const center = region ? new THREE.Vector3(
-      ((region.x[0] + region.x[1]) / 2 - model.widthMm / 2) * sx,
+      ((region.x[0] + region.x[1]) / 2 - widthMm / 2) * sx,
       (region.z[0] + region.z[1]) / 2 * sz,
-      ((region.y[0] + region.y[1]) / 2 - model.lengthMm / 2) * sy,
+      ((region.y[0] + region.y[1]) / 2 - lengthMm / 2) * sy,
     ) : new THREE.Vector3()
     const span = region
       ? Math.max((region.x[1] - region.x[0]) * sx, (region.y[1] - region.y[0]) * sy, (region.z[1] - region.z[0]) * sz, 1)
-      : Math.max(model.widthMm, model.lengthMm, 1)
+      : Math.max(widthMm, lengthMm, 1)
     const positions: Record<ViewPreset, [number, number, number]> = {
       top: [0, span * 1.82, 0.001],
       front: [0, span * 0.2, span * 1.9],
@@ -77,7 +80,7 @@ function CameraRig({ model, request, controlsRef }: {
     camera.updateProjectionMatrix()
     controlsRef.current.target.copy(center)
     controlsRef.current.update()
-  }, [camera, controlsRef, model, request])
+  }, [camera, controlsRef, identity, lengthMm, request, widthMm])
   return null
 }
 
@@ -145,6 +148,7 @@ function ModelManipulator({
   const cameraRightRef = useRef(new THREE.Vector3())
   const cameraUpRef = useRef(new THREE.Vector3())
   const { camera, gl } = useThree()
+  const modelIdentity = `${model.fileName}:${model.capture?.id ?? model.kind}`
 
   useEffect(() => {
     if (!groupRef.current) return
@@ -152,7 +156,7 @@ function ModelManipulator({
     groupRef.current.rotation.set(0, 0, 0)
     groupRef.current.position.set(0, 0, 0)
     groupRef.current.scale.setScalar(1)
-  }, [model.geometry, modelResetNonce])
+  }, [modelIdentity, modelResetNonce])
 
   useEffect(() => {
     gl.domElement.style.cursor = surfaceProps.pointMarkingEnabled ? 'crosshair' : interactionMode === 'model' ? 'grab' : 'default'

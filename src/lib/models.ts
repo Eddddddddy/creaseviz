@@ -92,6 +92,7 @@ export async function zagFieldToModel(
   targetVertices = 220_000,
   signal?: AbortSignal,
 ): Promise<ViewerModel> {
+  assertNotAborted(signal)
   validateZagDimensions(field.capture.width, field.capture.height)
   const worker = new Worker(new URL('../workers/meshWorker.ts', import.meta.url), { type: 'module' })
   const transfers: Transferable[] = [field.heights.buffer, field.mask.buffer]

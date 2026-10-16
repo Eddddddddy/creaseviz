@@ -1,6 +1,6 @@
 import type { RegionBounds, ViewerModel } from '../types'
 
-export function fullModelRegion(model: ViewerModel): RegionBounds {
+export function fullModelRegion(model: Pick<ViewerModel, 'widthMm' | 'lengthMm' | 'minHeightMm' | 'maxHeightMm'>): RegionBounds {
   return {
     x: [0, Math.ceil(model.widthMm * 1e6) / 1e6],
     y: [0, Math.ceil(model.lengthMm * 1e6) / 1e6],

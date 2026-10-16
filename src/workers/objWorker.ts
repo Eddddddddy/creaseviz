@@ -43,6 +43,7 @@ function exportObj(message: ObjWorkerRequest) {
     ...mesh,
     region,
     sampleStep: mesh.sampleStep,
+    spikeRepair: message.spikeRepair,
   }, (progress) => self.postMessage({ type: 'obj-progress', progress: source ? 0.4 + progress * 0.6 : progress }))
   self.postMessage({ type: 'obj-result', blob: result.blob, summary: result.summary })
 }

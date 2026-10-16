@@ -75,7 +75,7 @@ export default function CrossSection({
         <div className="profile-header-title">
           <span className="profile-mark" />
           <strong>截面曲线</strong>
-          <span className="profile-subtitle">{region ? '选区内 · 真实 Z' : '真实 Z，不受显示放大影响'}</span>
+          <span className="profile-subtitle">{model?.spikeRepair ? '修复后 Z，不受显示放大影响' : region ? '选区内 · 真实 Z' : '真实 Z，不受显示放大影响'}</span>
         </div>
         <div className="profile-header-controls">
           <button

@@ -3,8 +3,9 @@ import type { ObjScaleMode } from '../lib/objExport'
 import type { CaptureSummary, ObjDetail, RegionBounds, SurfaceMode, ViewerModel } from '../types'
 import RegionSelection from './RegionSelection'
 import ObjExportPanel from './ObjExportPanel'
+import SpikeRemovalPanel, { type SpikeRemovalPanelProps } from './SpikeRemovalPanel'
 
-interface InspectorProps {
+interface InspectorProps extends SpikeRemovalPanelProps {
   model?: ViewerModel
   captures: CaptureSummary[]
   selectedCaptureId?: string
@@ -15,6 +16,9 @@ interface InspectorProps {
   maxHeight: number
   onMinHeight: (value: number) => void
   onMaxHeight: (value: number) => void
+  onAutoRange: () => void
+  autoRangeComputing: boolean
+  autoRangeError?: string
   lightStrength: number
   paletteBrightness: number
   textureMix: number
@@ -128,12 +132,14 @@ export default function Inspector(props: InspectorProps) {
             {capture && <><dt>设备型号</dt><dd>{capture.model}</dd><dt>序列号</dt><dd>{capture.serial}</dd></>}
             <dt>采样尺寸</dt><dd>{capture ? `${capture.width} × ${capture.height}` : '网格模型'}</dd>
             <dt>XY 间距</dt><dd>{capture ? `${(capture.xyPitchMm * 1000).toFixed(4)} µm` : 'STL 未记录'}</dd>
-            <dt>真实 Z 范围</dt><dd>{(zRange * 1000).toFixed(2)} µm</dd>
+            <dt>{props.model.spikeRepair ? '修复后 Z 范围' : '真实 Z 范围'}</dt><dd>{(zRange * 1000).toFixed(2)} µm</dd>
             <dt>显示网格</dt><dd>{props.model.renderedPointCount.toLocaleString()} 点</dd>
           </dl>
         )}
         {props.model?.warning && <p className="source-warning">{props.model.warning}</p>}
       </section>
+
+      {props.model?.kind === 'zag' && <SpikeRemovalPanel {...props} />}
 
       {props.model?.kind === 'zag' && props.region && (
         <RegionSelection model={props.model} enabled={props.regionEnabled} bounds={props.region}
@@ -158,11 +164,15 @@ export default function Inspector(props: InspectorProps) {
         {props.textureLoading && <p className="texture-status"><span />正在载入 ZAG 表面纹理…</p>}
         <label className="field-row numeric-field"><span>最小值</span><input type="number" step="0.001" value={Number(props.minHeight.toFixed(6))} onChange={(e) => props.onMinHeight(Number(e.target.value))} /><em>mm</em></label>
         <label className="field-row numeric-field"><span>最大值</span><input type="number" step="0.001" value={Number(props.maxHeight.toFixed(6))} onChange={(e) => props.onMaxHeight(Number(e.target.value))} /><em>mm</em></label>
-        <button className="text-button" disabled={!props.model} onClick={() => {
-          if (!props.model) return
-          props.onMinHeight(props.model.suggestedMinMm)
-          props.onMaxHeight(props.model.suggestedMaxMm)
-        }}>恢复自动范围</button>
+        <div className="auto-range-row">
+          <span>{props.regionEnabled ? '按当前 XYZ 选区计算' : '按完整模型恢复'}</span>
+          <button className="text-button" disabled={!props.model || props.regionDisabled || props.autoRangeComputing}
+            onClick={props.onAutoRange} aria-busy={props.autoRangeComputing}
+            title={props.regionEnabled ? '计算选区内有效表面的真实最小和最大高度' : '恢复完整模型的默认自动范围'}>
+            {props.autoRangeComputing ? '计算中…' : '恢复自动范围'}
+          </button>
+        </div>
+        {props.autoRangeError && <p className="auto-range-error" role="status">{props.autoRangeError}</p>}
       </section>
 
       <section className="inspector-section">

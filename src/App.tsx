@@ -1,16 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Camera, Download, Film, FolderOpen, MapPin, RotateCcw, ScanLine, SquareDashedMousePointer, Trash2 } from 'lucide-react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { Camera, ChartNoAxesCombined, Download, Film, FolderOpen, MapPin, RotateCcw, ScanLine, SquareDashedMousePointer, Trash2 } from 'lucide-react'
 import CrossSection from './components/CrossSection'
 import ExportWorkspace from './components/ExportWorkspace'
 import Inspector from './components/Inspector'
 import ViewerCanvas from './components/ViewerCanvas'
-import { disposeViewerModel, stlFileToModel, zagFieldToModel, zagTextureToRgba } from './lib/models'
+import { disposeViewerModel, getZagModelSource, stlFileToModel, zagFieldToModel, zagTextureToRgba } from './lib/models'
+import { nondegenerateHeightRange, zagRegionHeightRange } from './lib/heightRange'
 import { downloadObj, createViewerModelObj } from './lib/objExportClient'
 import type { ObjScaleMode } from './lib/objExport'
 import { paletteCss } from './lib/palette'
 import { ZagArchive } from './lib/zag'
 import { fullModelRegion } from './lib/region'
+import { DEFAULT_SPIKE_OPTIONS, type SpikeRemovalOptions, type SpikeRemovalStats } from './lib/spikeRemoval'
+import { repairZagSpikes } from './lib/spikeRemovalClient'
+import { DEFAULT_ASSESSMENT_OPTIONS, type AssessmentSession } from './lib/assessmentTypes'
 import type { ExportCameraSettings, InteractionMode, ObjDetail, PointMarker, PointerSample, RegionBounds, SurfaceMode, ViewPreset, ViewRequest, ViewerModel } from './types'
+
+const AssessmentWorkspace = lazy(() => import('./components/AssessmentWorkspace'))
+function currentPage(): 'viewer' | 'export' | 'assessment' {
+  return window.location.hash === '#/export' ? 'export' : window.location.hash === '#/assessment' ? 'assessment' : 'viewer'
+}
 
 function formatNumber(value: number, digits = 3): string {
   return Number.isFinite(value) ? value.toFixed(digits) : '—'
@@ -25,6 +34,15 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+function disposeModels(models: (ViewerModel | undefined)[]): void {
+  const disposed = new Set<ViewerModel['geometry']>()
+  for (const previous of models) {
+    if (!previous || disposed.has(previous.geometry)) continue
+    disposed.add(previous.geometry)
+    disposeViewerModel(previous)
+  }
+}
+
 interface LoadedTexture {
   key: string
   fileName: string
@@ -35,7 +53,10 @@ interface LoadedTexture {
 }
 
 export default function App() {
-  const [page, setPage] = useState<'viewer' | 'export'>(() => window.location.hash === '#/export' ? 'export' : 'viewer')
+  const [page, setPage] = useState(currentPage)
+  const [assessmentSession, setAssessmentSession] = useState<AssessmentSession>(() => ({
+    options: { ...DEFAULT_ASSESSMENT_OPTIONS }, scope: 'selection', source: 'current', comparisons: [],
+  }))
   const [archive, setArchive] = useState<ZagArchive>()
   const [model, setModel] = useState<ViewerModel>()
   const [selectedCaptureId, setSelectedCaptureId] = useState<string>()
@@ -65,6 +86,13 @@ export default function App() {
   const [objDetail, setObjDetail] = useState<ObjDetail>('high')
   const [regionEnabled, setRegionEnabled] = useState(false)
   const [region, setRegion] = useState<RegionBounds>()
+  const [autoRangeComputing, setAutoRangeComputing] = useState(false)
+  const [autoRangeError, setAutoRangeError] = useState<string>()
+  const [spikeOptions, setSpikeOptions] = useState<SpikeRemovalOptions>(DEFAULT_SPIKE_OPTIONS)
+  const [spikeReport, setSpikeReport] = useState<{ options: SpikeRemovalOptions; stats: SpikeRemovalStats }>()
+  const [spikeProcessing, setSpikeProcessing] = useState(false)
+  const [spikeProgress, setSpikeProgress] = useState(0)
+  const [spikeError, setSpikeError] = useState<string>()
   const [objExporting, setObjExporting] = useState(false)
   const [objExportProgress, setObjExportProgress] = useState(0)
   const [objExportMessage, setObjExportMessage] = useState<string>()
@@ -75,18 +103,35 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null)
   const pointMarkerSequence = useRef(0)
   const modelRef = useRef<ViewerModel | undefined>(undefined)
+  const originalModelRef = useRef<ViewerModel | undefined>(undefined)
+  const repairedModelRef = useRef<ViewerModel | undefined>(undefined)
+  const spikeAbortRef = useRef<AbortController | undefined>(undefined)
   const loadAbortRef = useRef<AbortController | undefined>(undefined)
   const objExportAbortRef = useRef<AbortController | undefined>(undefined)
+  const autoRangeAbortRef = useRef<AbortController | undefined>(undefined)
   const textureQueueRef = useRef<Promise<void>>(Promise.resolve())
   const textureJobsRef = useRef(new Map<string, Promise<LoadedTexture>>())
 
   useEffect(() => {
-    const syncPage = () => setPage(window.location.hash === '#/export' ? 'export' : 'viewer')
+    const syncPage = () => setPage(currentPage())
     window.addEventListener('hashchange', syncPage)
     return () => window.removeEventListener('hashchange', syncPage)
   }, [])
 
+  const getAssessmentSourceModel = useCallback((source: 'current' | 'original') => (
+    source === 'original' ? originalModelRef.current : modelRef.current
+  ), [])
+
   const applyModel = useCallback((next: ViewerModel) => {
+    spikeAbortRef.current?.abort()
+    spikeAbortRef.current = undefined
+    setSpikeProcessing(false)
+    setSpikeReport(undefined)
+    setSpikeError(undefined)
+    autoRangeAbortRef.current?.abort()
+    autoRangeAbortRef.current = undefined
+    setAutoRangeComputing(false)
+    setAutoRangeError(undefined)
     objExportAbortRef.current?.abort()
     objExportAbortRef.current = undefined
     setObjExporting(false)
@@ -95,14 +140,16 @@ export default function App() {
     setObjExportError(undefined)
     setRegionEnabled(false)
     setRegion(next.kind === 'zag' ? fullModelRegion(next) : undefined)
-    setModel((previous) => {
-      if (previous) disposeViewerModel(previous)
-      return next
-    })
+    disposeModels([modelRef.current, originalModelRef.current, repairedModelRef.current])
+    originalModelRef.current = next
+    repairedModelRef.current = undefined
+    modelRef.current = next
+    setModel(next)
     setMinHeight(next.suggestedMinMm)
     setMaxHeight(next.suggestedMaxMm)
     setScaleZ(next.kind === 'zag' ? 10 : 1)
     setMode('height')
+    setModelResetNonce((value) => value + 1)
     pointMarkerSequence.current = 0
     setPointMarkers([])
     const sectionCount = next.sectionSamples && next.sectionCount ? next.sectionCount : next.crossSections.length
@@ -131,7 +178,9 @@ export default function App() {
   useEffect(() => () => {
     loadAbortRef.current?.abort()
     objExportAbortRef.current?.abort()
-    if (modelRef.current) disposeViewerModel(modelRef.current)
+    autoRangeAbortRef.current?.abort()
+    spikeAbortRef.current?.abort()
+    disposeModels([modelRef.current, originalModelRef.current, repairedModelRef.current])
   }, [])
 
   const ensureTexture = useCallback((target: ViewerModel): Promise<LoadedTexture> => {
@@ -222,6 +271,9 @@ export default function App() {
   const loadCapture = useCallback(async (source: ZagArchive, captureId: string) => {
     const capture = source.captures.find((item) => item.id === captureId)
     if (!capture) return
+    spikeAbortRef.current?.abort()
+    spikeAbortRef.current = undefined
+    setSpikeProcessing(false)
     loadAbortRef.current?.abort()
     const controller = new AbortController()
     loadAbortRef.current = controller
@@ -252,6 +304,9 @@ export default function App() {
       setError('请选择 .zag 或 .stl 文件')
       return
     }
+    spikeAbortRef.current?.abort()
+    spikeAbortRef.current = undefined
+    setSpikeProcessing(false)
     loadAbortRef.current?.abort()
     const controller = new AbortController()
     loadAbortRef.current = controller
@@ -355,13 +410,121 @@ export default function App() {
     }
   }, [model, objDetail, objExporting, objScaleMode, region, regionEnabled, scaleX, scaleY, scaleZ])
 
+  const cancelAutoRange = () => {
+    autoRangeAbortRef.current?.abort()
+    autoRangeAbortRef.current = undefined
+    setAutoRangeComputing(false)
+    setAutoRangeError(undefined)
+  }
+
+  const restoreAutoRange = async () => {
+    if (!model || busy || spikeProcessing || autoRangeComputing) return
+    const controller = new AbortController()
+    autoRangeAbortRef.current = controller
+    setAutoRangeComputing(true)
+    setAutoRangeError(undefined)
+    try {
+      let range = nondegenerateHeightRange(model.suggestedMinMm, model.suggestedMaxMm)
+      if (regionEnabled && region) {
+        const source = getZagModelSource(model)
+        if (!source || !model.capture) throw new Error('缺少原始高度数据，请重新载入 ZAG 后重试')
+        range = await zagRegionHeightRange({ ...source, capture: model.capture }, region, controller.signal)
+      }
+      if (autoRangeAbortRef.current !== controller) return
+      setMinHeight(range.min)
+      setMaxHeight(range.max)
+    } catch (cause) {
+      if (autoRangeAbortRef.current === controller && !isAbortError(cause)) {
+        setAutoRangeError(cause instanceof Error ? cause.message : '自动范围计算失败')
+      }
+    } finally {
+      if (autoRangeAbortRef.current === controller) {
+        autoRangeAbortRef.current = undefined
+        setAutoRangeComputing(false)
+      }
+    }
+  }
+
+  // Swap only the data surface; keep view, display scale and selection unchanged.
+  const showSpikeModel = (next: ViewerModel) => {
+    cancelAutoRange()
+    objExportAbortRef.current?.abort()
+    setObjExportMessage(undefined)
+    setObjExportError(undefined)
+    clearPointMarkers()
+    setPointer(undefined)
+    const current = modelRef.current
+    const textured = current?.textureRgba && !next.textureRgba
+      ? { ...next, textureRgba: current.textureRgba, textureWidth: current.textureWidth, textureHeight: current.textureHeight }
+      : next
+    modelRef.current = textured
+    setModel(textured)
+  }
+
+  const cancelSpikeRepair = () => {
+    spikeAbortRef.current?.abort()
+    spikeAbortRef.current = undefined
+    setSpikeProcessing(false)
+  }
+
+  const repairSpikes = async () => {
+    const original = originalModelRef.current
+    const source = original && getZagModelSource(original)
+    if (busy || objExporting || spikeProcessing) return
+    if (!original?.capture || !source) {
+      setSpikeError('缺少原始高度数据，请重新打开 ZAG 后重试')
+      return
+    }
+    const controller = new AbortController()
+    spikeAbortRef.current = controller
+    setSpikeProcessing(true)
+    setSpikeProgress(0)
+    setSpikeError(undefined)
+    const options = { ...spikeOptions }
+    try {
+      const result = await repairZagSpikes({ ...source, capture: original.capture }, options,
+        controller.signal, (value) => setSpikeProgress(value * 0.8))
+      const next = await zagFieldToModel({
+        capture: original.capture, heights: result.heights, mask: source.mask.slice(),
+        maskStride: source.maskStride, palette: original.palette,
+      }, original.fileName, 220_000, controller.signal)
+      if (spikeAbortRef.current !== controller || originalModelRef.current !== original) {
+        disposeViewerModel(next)
+        return
+      }
+      next.spikeRepair = { options, stats: result.stats }
+      const previous = repairedModelRef.current
+      repairedModelRef.current = next
+      showSpikeModel(next)
+      if (previous) disposeViewerModel(previous)
+      setSpikeReport(next.spikeRepair)
+      setSpikeProgress(1)
+    } catch (cause) {
+      if (spikeAbortRef.current === controller && !isAbortError(cause)) {
+        setSpikeError(cause instanceof Error ? cause.message : '去尖刺失败，已保留原有数据')
+      }
+    } finally {
+      if (spikeAbortRef.current === controller) {
+        spikeAbortRef.current = undefined
+        setSpikeProcessing(false)
+      }
+    }
+  }
+
+  const toggleSpikeRepair = () => {
+    const next = model?.spikeRepair ? originalModelRef.current : repairedModelRef.current
+    if (next && !busy && !objExporting && !spikeProcessing) showSpikeModel(next)
+  }
+
   const updateRegion = (next: RegionBounds) => {
+    cancelAutoRange()
     setRegion(next)
     setObjExportMessage(undefined)
     setObjExportError(undefined)
   }
 
   const toggleRegion = (enabled: boolean) => {
+    cancelAutoRange()
     setRegionEnabled(enabled)
     setObjExportMessage(undefined)
     setObjExportError(undefined)
@@ -379,6 +542,7 @@ export default function App() {
   }
 
   const openExportPage = () => {
+    if (busy || spikeProcessing) return
     window.location.hash = '/export'
   }
 
@@ -391,6 +555,20 @@ export default function App() {
       Math.ceil(region.y[0] / model.lengthMm * (model.sectionCount - 1)),
       Math.min(sectionIndex, Math.floor(region.y[1] / model.lengthMm * (model.sectionCount - 1))),
     ) : sectionIndex
+
+  if (page === 'assessment') {
+    return <main className="app-shell assessment-shell" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+      <input ref={fileInput} hidden type="file" accept=".zag,.stl" multiple onChange={(event) => event.target.files && void loadFiles(event.target.files)} />
+      <Suspense fallback={<div className="assessment-loading">正在打开屏幕评估…</div>}>
+        <AssessmentWorkspace model={model} captures={archive?.captures ?? []} selectedCaptureId={selectedCaptureId}
+          busy={busy || spikeProcessing} loadError={error} regionEnabled={regionEnabled} region={region}
+          onRegionEnabled={toggleRegion} onRegion={updateRegion} onFocusRegion={focusRegion}
+          onCapture={(id) => archive && void loadCapture(archive, id)} getSourceModel={getAssessmentSourceModel}
+          session={assessmentSession} onSession={setAssessmentSession} onBack={closeExportPage}
+          onOpenFile={() => fileInput.current?.click()} />
+      </Suspense>
+    </main>
+  }
 
   if (page === 'export') {
     return (
@@ -450,7 +628,8 @@ export default function App() {
         </button>
         <div className="toolbar-spacer" />
         <button className="toolbar-button" disabled={!model} onClick={takeScreenshot}><Download size={17} />截图</button>
-        <button className="toolbar-button" disabled={!model} onClick={openExportPage}><Film size={17} />影视导出</button>
+        <button className="toolbar-button" disabled={busy || spikeProcessing} onClick={() => { window.location.hash = '/assessment' }}><ChartNoAxesCombined size={17} />屏幕评估</button>
+        <button className="toolbar-button" disabled={!model || busy || spikeProcessing} onClick={openExportPage}><Film size={17} />影视导出</button>
         <button className="toolbar-button" onClick={resetScene}><RotateCcw size={17} />重置</button>
       </header>
 
@@ -512,7 +691,7 @@ export default function App() {
                 </div>
               </div>
             )}
-            {model && <div className="source-chip"><span />{model.kind === 'zag' ? 'ZAG 原始高度场' : 'STL 网格'}</div>}
+            {model && <div className="source-chip"><span />{model.spikeRepair ? 'ZAG 去尖刺 · 修复后' : model.kind === 'zag' ? 'ZAG 原始高度场' : 'STL 网格'}</div>}
             {model && regionEnabled && region && <div className="region-chip">XYZ 选区 · {(region.x[1] - region.x[0]).toFixed(2)} × {(region.y[1] - region.y[0]).toFixed(2)} mm</div>}
             {model && pointMarkingEnabled && (
               <div className="interaction-hint is-measuring">
@@ -533,6 +712,17 @@ export default function App() {
         </section>
 
         <Inspector
+          spikeOptions={spikeOptions}
+          onSpikeOptions={setSpikeOptions}
+          spikeReport={spikeReport}
+          spikeEnabled={!!model?.spikeRepair}
+          spikeProcessing={spikeProcessing}
+          spikeProgress={spikeProgress}
+          spikeError={spikeError}
+          spikeDisabled={!model || busy || objExporting}
+          onRepairSpikes={() => void repairSpikes()}
+          onToggleSpikes={toggleSpikeRepair}
+          onCancelSpikes={cancelSpikeRepair}
           model={model}
           captures={archive?.captures ?? []}
           selectedCaptureId={selectedCaptureId}
@@ -541,8 +731,11 @@ export default function App() {
           onMode={(nextMode) => void changeMode(nextMode)}
           minHeight={minHeight}
           maxHeight={maxHeight}
-          onMinHeight={setMinHeight}
-          onMaxHeight={setMaxHeight}
+          onMinHeight={(value) => { cancelAutoRange(); setMinHeight(value) }}
+          onMaxHeight={(value) => { cancelAutoRange(); setMaxHeight(value) }}
+          onAutoRange={() => void restoreAutoRange()}
+          autoRangeComputing={autoRangeComputing}
+          autoRangeError={autoRangeError}
           lightStrength={lightStrength}
           paletteBrightness={paletteBrightness}
           textureMix={textureMix}
@@ -573,7 +766,7 @@ export default function App() {
           onExportObj={() => void exportObj()}
           regionEnabled={regionEnabled}
           region={region}
-          regionDisabled={busy || objExporting}
+          regionDisabled={busy || objExporting || spikeProcessing}
           onRegionEnabled={toggleRegion}
           onRegion={updateRegion}
           onFocusRegion={focusRegion}

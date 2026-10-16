@@ -125,7 +125,7 @@ export function createViewerModelObj(
       finish(() => resolve({
         ...summary,
         blob,
-        fileName: safeObjFileName(`${model.fileName.replace(/\.zag$/i, '')}-${model.label}${options.region ? '-region' : ''}`, options.scaleMode),
+        fileName: safeObjFileName(`${model.fileName.replace(/\.zag$/i, '')}-${model.label}${options.region ? '-region' : ''}${model.spikeRepair ? '-despiked' : ''}`, options.scaleMode),
       }))
     }
 
@@ -144,6 +144,12 @@ export function createViewerModelObj(
       scaleZ,
       scaleMode: options.scaleMode,
       region: options.region,
+      spikeRepair: model.spikeRepair ? {
+        thresholdUm: model.spikeRepair.options.thresholdUm,
+        radiusMm: model.spikeRepair.stats.effectiveRadiusMm,
+        direction: model.spikeRepair.options.direction,
+        changedCount: model.spikeRepair.stats.changedCount,
+      } : undefined,
       source,
     }, transfers)
   })

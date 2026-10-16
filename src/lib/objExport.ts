@@ -20,6 +20,7 @@ export interface ObjMeshInput {
   scaleMode: ObjScaleMode
   region?: RegionBounds
   sampleStep?: number
+  spikeRepair?: { thresholdUm: number; radiusMm: number; direction: string; changedCount: number }
 }
 
 export interface ObjMeshSummary {
@@ -91,6 +92,7 @@ export function createObjBlob(
     `# Scale: ${scaleDescription}\n`,
     ...(input.region ? [`# Region (mm, before scale): X ${input.region.x.join('..')}; Y ${input.region.y.join('..')}; Z ${input.region.z.join('..')}\n`] : []),
     ...(input.sampleStep ? [`# Source sample step: ${input.sampleStep} pixel(s)\n`] : []),
+    ...(input.spikeRepair ? [`# Processing: isolated spike repair; threshold ${input.spikeRepair.thresholdUm} um; radius ${input.spikeRepair.radiusMm} mm; direction ${input.spikeRepair.direction}; changed ${input.spikeRepair.changedCount} points\n`] : []),
     `# Vertices: ${vertexCount}; Triangles: ${triangleCount}\n`,
     `o ${objectName}\n`,
   ]

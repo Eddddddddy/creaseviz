@@ -1,4 +1,5 @@
 import type * as THREE from 'three'
+import type { SpikeRemovalOptions, SpikeRemovalStats } from './lib/spikeRemoval'
 
 export type ViewPreset = 'top' | 'front' | 'side' | 'iso' | 'reset'
 export type SurfaceMode = 'height' | 'texture' | 'solid'
@@ -86,6 +87,7 @@ export interface ViewerModel {
   capture?: CaptureSummary
   hasSourceData?: boolean
   warning?: string
+  spikeRepair?: { options: SpikeRemovalOptions; stats: SpikeRemovalStats }
 }
 
 export interface PointerSample {
